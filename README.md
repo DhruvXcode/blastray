@@ -14,8 +14,10 @@ It will provide four primitives:
 
 ## Status
 
-Mission 0 establishes the crate, project boundaries, and reference-study setup.
-The intelligence engine is not implemented yet.
+Mission 1 provides a deterministic TypeScript/JavaScript vertical slice for
+`.ts`, `.tsx`, `.js`, and `.jsx` files. It indexes named top-level functions,
+classes, and class methods; resolves only confirmed local or relative-imported
+function calls; and reports uncertainty instead of guessing.
 
 ## Build and test
 
@@ -23,4 +25,13 @@ The intelligence engine is not implemented yet.
 cargo build
 cargo test
 cargo run -- --help
+```
+
+Run from a repository root:
+
+```sh
+blastray find refreshSession
+blastray inspect src/auth/session.ts::refreshSession
+blastray trace src/a.ts::start src/d.ts::finish
+blastray impact src/auth/session.ts::refreshSession
 ```

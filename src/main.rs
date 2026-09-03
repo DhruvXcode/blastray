@@ -1,10 +1,46 @@
-fn main() {
-    match std::env::args().nth(1).as_deref() {
-        Some("--version") | Some("-V") => {
-            println!("blastray {}", env!("CARGO_PKG_VERSION"));
+mod index;
+mod parse;
+mod query;
+
+use std::path::Path;
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    match run(std::env::args().skip(1).collect()) {
+        Ok(output) => {
+            println!("{output}");
+            ExitCode::SUCCESS
         }
-        _ => {
-            println!("BlastRay — code intelligence for coding agents\n\nUsage: blastray [--help | --version]");
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
         }
     }
+}
+
+fn run(args: Vec<String>) -> Result<String, String> {
+    match args.as_slice() {
+        [] => Ok(help()),
+        [command] if command == "--help" || command == "-h" => Ok(help()),
+        [command] if command == "--version" || command == "-V" => {
+            Ok(format!("blastray {}", env!("CARGO_PKG_VERSION")))
+        }
+        [command, target] if command == "find" => {
+            Ok(query::find(&index::build(Path::new("."))?, target))
+        }
+        [command, target] if command == "inspect" => {
+            query::inspect(&index::build(Path::new("."))?, target)
+        }
+        [command, from, to] if command == "trace" => {
+            query::trace(&index::build(Path::new("."))?, from, to)
+        }
+        [command, target] if command == "impact" => {
+            query::impact(&index::build(Path::new("."))?, target)
+        }
+        _ => Err(help()),
+    }
+}
+
+fn help() -> String {
+    "BlastRay — code intelligence for coding agents\n\nUsage:\n  blastray find <query>\n  blastray inspect <target>\n  blastray trace <from> <to>\n  blastray impact <target>\n\nTargets accept a canonical symbol identity such as src/auth/session.ts::refreshSession.".to_string()
 }

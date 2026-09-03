@@ -1,22 +1,20 @@
 # Index
 
-The future index will represent a small code graph, not a general-purpose
-database.
+The index is a small code graph, not a general-purpose database.
 
-Possible entities:
+Mission 1 entities:
 
 - files
 - symbols
-- imports
-- calls
-- references
 
-Possible relationships:
+Symbol identity is `repo-relative/path.ts::SymbolName`; methods use
+`repo-relative/path.ts::ClassName.methodName`.
+
+Mission 1 relationships:
 
 - `DEFINES`
 - `IMPORTS`
 - `CALLS`
-- `REFERENCES`
 
-The exact storage layout and fields remain intentionally undecided until the
-first supported language and query need require them.
+Every attempted import or call is resolved, ambiguous, or unresolved. Only
+resolved relationships become graph edges.

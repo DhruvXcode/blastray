@@ -27,3 +27,9 @@ source -> parse -> resolve -> graph -> query -> CLI/MCP
 ```
 
 Each stage must earn its complexity through a current user-facing need.
+
+## Mission 1 boundary
+
+Mission 1 builds the graph in memory on each CLI invocation. Only confirmed
+relationships become edges. Unresolved and ambiguous imports or calls are kept
+as explicit diagnostics and never participate in `trace` or `impact`.
