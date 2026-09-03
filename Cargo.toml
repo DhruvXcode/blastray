@@ -1,0 +1,10 @@
+[package]
+name = "blastray"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A tiny native code-intelligence engine for coding agents."
+
+[[bin]]
+name = "blastray"
+path = "src/main.rs"
