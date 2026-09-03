@@ -38,3 +38,11 @@ schema/checksum, BLAKE3 source hashes, parsed artifacts, and per-file resolution
 facts. On load, BlastRay validates current hashes and reconstructs vector IDs,
 lookup maps, and query adjacency in memory. A bad cache is discarded in favor
 of a full source rebuild.
+
+## Mission 4 source spans
+
+Parsed symbols retain inclusive one-based start and end lines from Tree-sitter.
+`impact --diff` maps a changed line to the narrowest enclosing current symbol;
+class methods therefore win over their enclosing class. The persisted span is
+canonical parse metadata, while graph IDs and adjacency remain reconstructed
+views. Cache schema 2 invalidates caches written before spans existed.

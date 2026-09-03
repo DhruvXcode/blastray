@@ -18,6 +18,7 @@ pub(crate) struct SymbolDraft {
     pub name: String,
     pub file: String,
     pub line: usize,
+    pub end_line: usize,
     pub column: usize,
     pub kind: SymbolKind,
     pub exported: bool,
@@ -121,11 +122,13 @@ fn add_function(
     let canonical = format!("{}::{name}", parsed.path);
     let (calls, shadowed) = callable_body(node, source);
     let position = node.start_position();
+    let end_position = node.end_position();
     parsed.symbols.push(SymbolDraft {
         canonical,
         name,
         file: parsed.path.clone(),
         line: position.row + 1,
+        end_line: end_position.row + 1,
         column: position.column + 1,
         kind: SymbolKind::Function,
         exported,
@@ -146,11 +149,13 @@ fn add_class(
         return;
     };
     let position = node.start_position();
+    let end_position = node.end_position();
     parsed.symbols.push(SymbolDraft {
         canonical: format!("{}::{name}", parsed.path),
         name: name.clone(),
         file: parsed.path.clone(),
         line: position.row + 1,
+        end_line: end_position.row + 1,
         column: position.column + 1,
         kind: SymbolKind::Class,
         exported,
@@ -176,11 +181,13 @@ fn add_method(parsed: &mut ParsedFile, class: &str, node: Node<'_>, source: &str
     };
     let (calls, shadowed) = callable_body(node, source);
     let position = node.start_position();
+    let end_position = node.end_position();
     parsed.symbols.push(SymbolDraft {
         canonical: format!("{}::{class}.{name}", parsed.path),
         name,
         file: parsed.path.clone(),
         line: position.row + 1,
+        end_line: end_position.row + 1,
         column: position.column + 1,
         kind: SymbolKind::Method,
         exported: false,

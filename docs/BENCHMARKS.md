@@ -79,3 +79,38 @@ The GitNexus run uses the same sequence with a disposable copy of
 
 Measurements are one release-mode run on this environment. `/usr/bin/time` was
 unavailable, so peak RSS was not recorded.
+
+## Mission 4 warm `impact --diff`
+
+Build release mode, create a disposable Git repository for the fixture, warm
+the cache with `find`, then make one existing-function edit before timing the
+diff query. The GitNexus copy already has a `HEAD`; its edit is deliberately in
+one modeled function.
+
+```text
+cargo build --release
+benchmark_dir=$(mktemp -d /tmp/blastray-mission4-XXXXXX)
+cp -a tests/fixtures/basic "$benchmark_dir/basic"
+git -C "$benchmark_dir/basic" init -q
+git -C "$benchmark_dir/basic" config user.name benchmark
+git -C "$benchmark_dir/basic" config user.email benchmark@example.invalid
+git -C "$benchmark_dir/basic" add . && git -C "$benchmark_dir/basic" commit -qm initial
+(cd "$benchmark_dir/basic" && /workspaces/blastray/target/release/blastray find '' >/dev/null)
+# Edit src/local.ts inside leaf(), then:
+(cd "$benchmark_dir/basic" && time /workspaces/blastray/target/release/blastray impact --diff)
+
+cp -a misc/references/gitnexus "$benchmark_dir/gitnexus"
+(cd "$benchmark_dir/gitnexus" && /workspaces/blastray/target/release/blastray find '' >/dev/null)
+# Edit gitnexus/src/utils/process-identity.ts inside isProcessAlive(), then:
+(cd "$benchmark_dir/gitnexus" && time /workspaces/blastray/target/release/blastray impact --diff)
+```
+
+| repository | indexed files | symbols | cache size | changed files | mapped changed symbols | confirmed affected symbols | warm diff wall |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `tests/fixtures/basic` | 13 | 23 | 6,483 bytes | 1 | 1 | 4 | 0.023 s |
+| pinned GitNexus | 2,600 | 7,795 | 17,570,026 bytes | 1 | 1 | 0 | 2.440 s |
+
+These are single release-mode runs on this environment. The fixture result is
+conservative/incomplete because the changed file contains an unrelated
+unresolved receiver call; the GitNexus result is conservative/incomplete due to
+unsupported/import and receiver relationships in its changed file.

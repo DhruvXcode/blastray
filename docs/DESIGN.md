@@ -56,3 +56,12 @@ changed cache rebuilds from source; unchanged state loads directly; modified
 existing supported files refresh through the Mission 2 path. BlastRay never
 requires initialization, edits tracked `.gitignore`, or makes persisted state
 authoritative over current source files.
+
+## Mission 4 boundary
+
+`impact --diff` asks Git for the staged and unstaged working-tree diff against
+`HEAD`, maps changed source spans to the narrowest current symbol, and runs one
+merged reverse-CALLS traversal. Deleted lines consult only the matching HEAD
+file, never a historical graph. Lines outside indexed symbols use explicit
+file-level roots; unsupported, added, deleted, renamed, untracked, unresolved,
+ambiguous, or truncated portions make completeness conservative/incomplete.

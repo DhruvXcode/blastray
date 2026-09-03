@@ -14,10 +14,12 @@ It will provide four primitives:
 
 ## Status
 
-Mission 1 provides a deterministic TypeScript/JavaScript vertical slice for
-`.ts`, `.tsx`, `.js`, and `.jsx` files. It indexes named top-level functions,
-classes, and class methods; resolves only confirmed local or relative-imported
-function calls; and reports uncertainty instead of guessing.
+Mission 4 provides a deterministic TypeScript/JavaScript slice for `.ts`,
+`.tsx`, `.js`, and `.jsx` files, with a persistent local index and
+`impact --diff` for staged plus unstaged Git changes. It indexes named
+top-level functions, classes, and class methods; resolves only confirmed local
+or relative-imported function calls; and reports uncertainty instead of
+guessing.
 
 ## Build and test
 
@@ -34,4 +36,5 @@ blastray find refreshSession
 blastray inspect src/auth/session.ts::refreshSession
 blastray trace src/a.ts::start src/d.ts::finish
 blastray impact src/auth/session.ts::refreshSession
+blastray impact --diff
 ```

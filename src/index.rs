@@ -20,7 +20,7 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 1;
+const CACHE_SCHEMA: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SymbolKind {
@@ -50,6 +50,7 @@ pub struct Symbol {
     pub name: String,
     pub file: usize,
     pub line: usize,
+    pub end_line: usize,
     pub column: usize,
     pub kind: SymbolKind,
 }
@@ -471,7 +472,7 @@ fn source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(paths)
 }
 
-fn is_source_file(path: &Path) -> bool {
+pub(crate) fn is_source_file(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| EXTENSIONS.contains(&extension))
@@ -791,6 +792,7 @@ fn materialize_graph(
             name: draft.name.clone(),
             file: file_ids[&draft.file],
             line: draft.line,
+            end_line: draft.end_line,
             column: draft.column,
             kind: draft.kind,
         })

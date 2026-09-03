@@ -65,3 +65,21 @@
   Why it matters: BlastRay hashes every currently selected source file with
   BLAKE3; additions, deletions, and path changes take the full-rebuild path.
   Reference: `gitnexus/src/storage/file-hash.ts`.
+
+## Mission 4 additions
+
+- Finding: zero-context diff parsing must preserve a deletion's old-side range
+  or a deletion can be misreported as no change; an unparseable nonempty diff
+  is partial analysis, never a clean result.
+  Why it matters: BlastRay maps deleted lines against the matching `HEAD` file
+  and labels unparseable or unmappable regions conservative/incomplete.
+  Reference: `gitnexus/src/storage/git.ts` (`parseDiffHunks`),
+  `gitnexus/src/mcp/local/local-backend.ts` (`detectChanges`).
+
+- Finding: changed symbols and capped results need stable ordering, while a
+  line-to-symbol match must be narrowed by source span rather than widened to
+  every enclosing declaration.
+  Why it matters: BlastRay selects the narrowest enclosing current function,
+  class, or method, sorts canonical roots, and uses one deduplicated reverse
+  traversal for all roots.
+  Reference: `gitnexus/src/mcp/local/local-backend.ts` (`detectChanges`).

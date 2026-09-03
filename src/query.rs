@@ -4,6 +4,36 @@ use crate::index::{Graph, RelationshipIssue, Symbol};
 
 const MAX_TRAVERSAL: usize = 500;
 
+pub(crate) struct ReverseImpact {
+    pub by_depth: BTreeMap<usize, Vec<usize>>,
+    pub truncated: bool,
+}
+
+pub(crate) fn reverse_impact(graph: &Graph, roots: &BTreeSet<usize>) -> ReverseImpact {
+    let mut queue: VecDeque<(usize, usize)> = roots.iter().map(|root| (*root, 0)).collect();
+    let mut visited = roots.clone();
+    let mut by_depth = BTreeMap::new();
+
+    while let Some((current, depth)) = queue.pop_front() {
+        if visited.len() >= MAX_TRAVERSAL {
+            break;
+        }
+        for &caller in graph.callers(current) {
+            if visited.insert(caller) {
+                by_depth
+                    .entry(depth + 1)
+                    .or_insert_with(Vec::new)
+                    .push(caller);
+                queue.push_back((caller, depth + 1));
+            }
+        }
+    }
+    ReverseImpact {
+        by_depth,
+        truncated: visited.len() >= MAX_TRAVERSAL,
+    }
+}
+
 pub fn find(graph: &Graph, query: &str) -> String {
     let query = query.to_lowercase();
     let matches: Vec<&Symbol> = graph
@@ -116,23 +146,10 @@ pub fn trace(graph: &Graph, from: &str, to: &str) -> Result<String, String> {
 
 pub fn impact(graph: &Graph, target: &str) -> Result<String, String> {
     let target = select(graph, target)?;
-    let mut queue = VecDeque::from([(target, 0usize)]);
-    let mut visited = BTreeSet::from([target]);
-    let mut by_depth: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let roots = BTreeSet::from([target]);
+    let result = reverse_impact(graph, &roots);
 
-    while let Some((current, depth)) = queue.pop_front() {
-        if visited.len() >= MAX_TRAVERSAL {
-            break;
-        }
-        for &caller in graph.callers(current) {
-            if visited.insert(caller) {
-                by_depth.entry(depth + 1).or_default().push(caller);
-                queue.push_back((caller, depth + 1));
-            }
-        }
-    }
-
-    let direct = by_depth.get(&1).cloned().unwrap_or_default();
+    let direct = result.by_depth.get(&1).cloned().unwrap_or_default();
     let mut output = format!(
         "Confirmed impact for {}\nDirect callers:",
         graph.symbols[target].canonical
@@ -140,7 +157,7 @@ pub fn impact(graph: &Graph, target: &str) -> Result<String, String> {
     append_symbols(&mut output, graph, &direct);
     output.push_str("\nTransitive callers:");
     let mut has_transitive = false;
-    for (depth, symbols) in by_depth.range(2..) {
+    for (depth, symbols) in result.by_depth.range(2..) {
         has_transitive = true;
         output.push_str(&format!("\nDepth {depth}:"));
         append_symbols(&mut output, graph, symbols);
@@ -150,9 +167,9 @@ pub fn impact(graph: &Graph, target: &str) -> Result<String, String> {
     }
     output.push_str(&format!(
         "\nTotal confirmed affected symbols: {}",
-        visited.len().saturating_sub(1)
+        result.by_depth.values().map(Vec::len).sum::<usize>()
     ));
-    if visited.len() >= MAX_TRAVERSAL {
+    if result.truncated {
         output.push_str(&format!(" (truncated at {MAX_TRAVERSAL})"));
     }
 
