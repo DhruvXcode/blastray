@@ -1,17 +1,18 @@
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 use tree_sitter::{Language, Node, Parser};
 
 use crate::index::SymbolKind;
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct ParsedFile {
     pub path: String,
     pub symbols: Vec<SymbolDraft>,
     pub imports: Vec<ImportDraft>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct SymbolDraft {
     pub canonical: String,
     pub name: String,
@@ -25,7 +26,7 @@ pub(crate) struct SymbolDraft {
     pub shadowed: BTreeSet<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct CallDraft {
     pub name: String,
     pub line: usize,
@@ -33,7 +34,7 @@ pub(crate) struct CallDraft {
     pub direct: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct ImportDraft {
     pub module: String,
     pub line: usize,
@@ -43,7 +44,7 @@ pub(crate) struct ImportDraft {
     pub unsupported: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(crate) enum ImportBinding {
     Named { local: String, imported: String },
     Default { local: String },

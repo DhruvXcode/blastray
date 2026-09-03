@@ -1,11 +1,38 @@
+use std::fs;
+use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 
 fn run(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_blastray"))
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic");
+    let fixture = std::env::temp_dir().join(format!(
+        "blastray-cli-test-{}-{}",
+        std::process::id(),
+        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+    ));
+    copy_tree(&source, &fixture);
+    let output = Command::new(env!("CARGO_BIN_EXE_blastray"))
         .args(args)
-        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/basic"))
+        .current_dir(&fixture)
         .output()
-        .unwrap()
+        .unwrap();
+    fs::remove_dir_all(fixture).unwrap();
+    output
+}
+
+fn copy_tree(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let target = destination.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
 }
 
 fn stdout(args: &[&str]) -> String {

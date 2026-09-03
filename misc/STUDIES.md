@@ -42,3 +42,26 @@
   intelligence vocabulary stays small.
   Reference: `gitnexus/src/storage/repo-manager.ts`, `.mcp.json`,
   `gitnexus-claude-plugin/`.
+
+## Mission 3 additions
+
+- Finding: cache metadata and parsed artifacts are version-gated; a missing,
+  malformed, or version-mismatched cache is deliberately equivalent to no
+  cache, not a user-facing analysis failure.
+  Why it matters: BlastRay validates a schema-tagged, checksummed `index.bin`
+  before using it and otherwise rebuilds entirely from source.
+  Reference: `gitnexus/src/storage/repo-manager.ts`,
+  `gitnexus/src/storage/parse-cache.ts`.
+
+- Finding: a completed temporary sibling file followed by rename protects the
+  previously readable state from truncation during an interrupted write.
+  Why it matters: BlastRay writes one temporary `.blastray/index.bin.tmp-*`
+  file, syncs it, then renames it into place; temporary leftovers are never
+  read, and a bad final file triggers a full rebuild.
+  Reference: `gitnexus/src/storage/fs-atomic.ts`.
+
+- Finding: deterministic hash diffs separate modifications from file-set
+  changes before incremental orchestration begins.
+  Why it matters: BlastRay hashes every currently selected source file with
+  BLAKE3; additions, deletions, and path changes take the full-rebuild path.
+  Reference: `gitnexus/src/storage/file-hash.ts`.

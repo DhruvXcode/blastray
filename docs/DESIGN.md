@@ -47,3 +47,12 @@ importers, then deterministically rebuilds the lightweight graph views and
 adjacency. Added, deleted, renamed, unsupported, or otherwise uncertain paths
 fall back to a full rebuild. There is no persistence, watcher, daemon, or new
 public command.
+
+## Mission 3 boundary
+
+The ordinary query commands automatically maintain one reconstructible local
+cache at `.blastray/index.bin`. A cold, corrupt, incompatible, or file-set
+changed cache rebuilds from source; unchanged state loads directly; modified
+existing supported files refresh through the Mission 2 path. BlastRay never
+requires initialization, edits tracked `.gitignore`, or makes persisted state
+authoritative over current source files.

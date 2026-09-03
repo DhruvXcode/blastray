@@ -30,3 +30,11 @@ traversals do not scan every call edge at each step.
 For a modified existing supported source file, BlastRay reparses that file and
 re-resolves only it plus direct resolved importers. A full rebuild is used for
 file-set changes and any uncertain invalidation.
+
+## Mission 3 persisted state
+
+`.blastray/index.bin` stores only canonical, reconstructible per-file state:
+schema/checksum, BLAKE3 source hashes, parsed artifacts, and per-file resolution
+facts. On load, BlastRay validates current hashes and reconstructs vector IDs,
+lookup maps, and query adjacency in memory. A bad cache is discarded in favor
+of a full source rebuild.

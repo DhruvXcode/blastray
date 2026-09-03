@@ -47,3 +47,35 @@ On this environment:
 
 The changed paths were respectively `src/consumer.ts` and
 `eval/workflow_bench/oracles/cross-module-parse-retry.oracle.test.ts`.
+
+## Mission 3 persistent CLI lifecycle
+
+Build release mode, make a disposable repository copy, then time ordinary
+queries. The first query creates `.blastray/index.bin`; the second validates
+hashes and loads it; appending whitespace exercises refresh without changing
+graph meaning.
+
+```text
+cargo build --release
+benchmark_dir=$(mktemp -d /tmp/blastray-mission3-XXXXXX)
+cp -a tests/fixtures/basic "$benchmark_dir/basic"
+cd "$benchmark_dir/basic"
+TIMEFORMAT='cold=%3R seconds'; time /workspaces/blastray/target/release/blastray find '' >/dev/null
+TIMEFORMAT='warm=%3R seconds'; time /workspaces/blastray/target/release/blastray find '' >/dev/null
+printf '\n' >> src/local.ts
+TIMEFORMAT='modified=%3R seconds'; time /workspaces/blastray/target/release/blastray find '' >/dev/null
+wc -c < .blastray/index.bin
+rm -rf "$benchmark_dir"
+```
+
+The GitNexus run uses the same sequence with a disposable copy of
+`misc/references/gitnexus` and changes
+`eval/workflow_bench/oracles/cross-module-parse-retry.oracle.test.ts`.
+
+| repository | indexed files | symbols | cache size | cold | warm unchanged | warm modified |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `tests/fixtures/basic` | 13 | 23 | 6,299 bytes | 0.005 s | 0.003 s | 0.004 s |
+| pinned GitNexus | 2,600 | 7,795 | 17,507,666 bytes | 4.635 s | 0.300 s | 0.501 s |
+
+Measurements are one release-mode run on this environment. `/usr/bin/time` was
+unavailable, so peak RSS was not recorded.

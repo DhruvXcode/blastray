@@ -1,14 +1,28 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 use ignore::WalkBuilder;
+use serde::{Deserialize, Serialize};
 
 use crate::parse::{ImportBinding, ImportDraft, ParsedFile, SymbolDraft, parse_file};
 
 const EXTENSIONS: [&str; 4] = ["ts", "tsx", "js", "jsx"];
-const SKIP_DIRECTORIES: [&str; 6] = [".git", "node_modules", "dist", "build", "coverage", ".next"];
+const SKIP_DIRECTORIES: [&str; 7] = [
+    ".git",
+    ".blastray",
+    "node_modules",
+    "dist",
+    "build",
+    "coverage",
+    ".next",
+];
+const CACHE_DIRECTORY: &str = ".blastray";
+const CACHE_FILE: &str = "index.bin";
+const CACHE_SCHEMA: u32 = 1;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SymbolKind {
     Function,
     Class,
@@ -58,7 +72,7 @@ pub struct CallEdge {
     pub to: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum RelationshipStatus {
     Unresolved,
     Ambiguous,
@@ -73,7 +87,7 @@ impl RelationshipStatus {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RelationshipIssue {
     pub status: RelationshipStatus,
     pub source: String,
@@ -142,6 +156,7 @@ pub enum RefreshKind {
 
 pub struct Index {
     root: PathBuf,
+    hashes: BTreeMap<String, [u8; 32]>,
     parsed: BTreeMap<String, ParsedFile>,
     resolved: BTreeMap<String, FileResolution>,
     graph: Graph,
@@ -152,12 +167,59 @@ impl Index {
         let root = root
             .canonicalize()
             .map_err(|error| format!("cannot read repository root {}: {error}", root.display()))?;
+        let hashes = source_hashes(&root)?;
+        Self::build_with_hashes(root, hashes)
+    }
+
+    pub fn open(root: &Path) -> Result<Self, String> {
+        let root = root
+            .canonicalize()
+            .map_err(|error| format!("cannot read repository root {}: {error}", root.display()))?;
+        add_git_exclude(&root);
+        let current_hashes = source_hashes(&root)?;
+        let mut index = match Self::load(&root) {
+            Some(index) if index.hashes.keys().eq(current_hashes.keys()) => index,
+            _ => return Self::build_and_persist(root, current_hashes),
+        };
+
+        let modified: Vec<String> = current_hashes
+            .iter()
+            .filter(|(path, hash)| index.hashes.get(*path) != Some(*hash))
+            .map(|(path, _)| path.clone())
+            .collect();
+        if modified.is_empty() {
+            index.root = root;
+            return Ok(index);
+        }
+        for path in modified {
+            if index.refresh(Path::new(&path))? == RefreshKind::FullRebuild {
+                return Self::build_and_persist(root, current_hashes);
+            }
+        }
+        index.hashes = current_hashes;
+        index.persist()?;
+        Ok(index)
+    }
+
+    fn build_and_persist(
+        root: PathBuf,
+        hashes: BTreeMap<String, [u8; 32]>,
+    ) -> Result<Self, String> {
+        let index = Self::build_with_hashes(root, hashes)?;
+        index.persist()?;
+        Ok(index)
+    }
+
+    fn build_with_hashes(
+        root: PathBuf,
+        hashes: BTreeMap<String, [u8; 32]>,
+    ) -> Result<Self, String> {
         let mut parsed = BTreeMap::new();
-        for path in source_files(&root)? {
-            let relative = relative_path(&root, &path)?;
+        for relative in hashes.keys() {
+            let path = root.join(relative);
             let source = std::fs::read_to_string(&path)
                 .map_err(|error| format!("cannot read {relative}: {error}"))?;
-            parsed.insert(relative.clone(), parse_file(&relative, &source)?);
+            parsed.insert(relative.clone(), parse_file(relative, &source)?);
         }
         let context = ResolveContext::new(&parsed);
         let resolved = parsed
@@ -167,6 +229,7 @@ impl Index {
         let graph = materialize_graph(&parsed, &resolved);
         Ok(Self {
             root,
+            hashes,
             parsed,
             resolved,
             graph,
@@ -195,6 +258,10 @@ impl Index {
             .map_err(|error| format!("cannot read {relative}: {error}"))?;
         self.parsed
             .insert(relative.clone(), parse_file(&relative, &source)?);
+        self.hashes.insert(
+            relative.clone(),
+            *blake3::hash(source.as_bytes()).as_bytes(),
+        );
 
         let context = ResolveContext::new(&self.parsed);
         let mut affected = importers;
@@ -229,10 +296,155 @@ impl Index {
         *self = Self::build(&self.root)?;
         Ok(RefreshKind::FullRebuild)
     }
+
+    fn persist(&self) -> Result<(), String> {
+        let cached = CachedIndex {
+            hashes: self.hashes.clone(),
+            parsed: self.parsed.clone(),
+            resolved: self.resolved.clone(),
+        };
+        let payload = bincode::serialize(&cached)
+            .map_err(|error| format!("cannot encode BlastRay cache: {error}"))?;
+        let envelope = CacheEnvelope {
+            schema: CACHE_SCHEMA,
+            checksum: *blake3::hash(&payload).as_bytes(),
+            payload,
+        };
+        let bytes = bincode::serialize(&envelope)
+            .map_err(|error| format!("cannot encode BlastRay cache envelope: {error}"))?;
+        let directory = self.root.join(CACHE_DIRECTORY);
+        fs::create_dir_all(&directory)
+            .map_err(|error| format!("cannot create {}: {error}", directory.display()))?;
+        atomic_write(&directory.join(CACHE_FILE), &bytes)
+    }
+
+    fn load(root: &Path) -> Option<Self> {
+        let bytes = fs::read(root.join(CACHE_DIRECTORY).join(CACHE_FILE)).ok()?;
+        let envelope: CacheEnvelope = bincode::deserialize(&bytes).ok()?;
+        if envelope.schema != CACHE_SCHEMA
+            || blake3::hash(&envelope.payload).as_bytes() != &envelope.checksum
+        {
+            return None;
+        }
+        let cached: CachedIndex = bincode::deserialize(&envelope.payload).ok()?;
+        if !cached.valid() {
+            return None;
+        }
+        let graph = materialize_graph(&cached.parsed, &cached.resolved);
+        Some(Self {
+            root: root.to_path_buf(),
+            hashes: cached.hashes,
+            parsed: cached.parsed,
+            resolved: cached.resolved,
+            graph,
+        })
+    }
 }
 
 pub fn build(root: &Path) -> Result<Graph, String> {
     Ok(Index::build(root)?.graph)
+}
+
+#[derive(Deserialize, Serialize)]
+struct CacheEnvelope {
+    schema: u32,
+    checksum: [u8; 32],
+    payload: Vec<u8>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct CachedIndex {
+    hashes: BTreeMap<String, [u8; 32]>,
+    parsed: BTreeMap<String, ParsedFile>,
+    resolved: BTreeMap<String, FileResolution>,
+}
+
+impl CachedIndex {
+    fn valid(&self) -> bool {
+        if !self.hashes.keys().eq(self.parsed.keys())
+            || !self.parsed.keys().eq(self.resolved.keys())
+        {
+            return false;
+        }
+        self.parsed.iter().all(|(path, file)| {
+            file.path == *path
+                && file.symbols.iter().all(|symbol| {
+                    symbol.file == *path && symbol.canonical.starts_with(&format!("{path}::"))
+                })
+        })
+    }
+}
+
+fn source_hashes(root: &Path) -> Result<BTreeMap<String, [u8; 32]>, String> {
+    let mut hashes = BTreeMap::new();
+    for path in source_files(root)? {
+        let relative = relative_path(root, &path)?;
+        let bytes = fs::read(&path).map_err(|error| format!("cannot read {relative}: {error}"))?;
+        hashes.insert(relative, *blake3::hash(&bytes).as_bytes());
+    }
+    Ok(hashes)
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let directory = path.parent().expect("cache path has a parent");
+    let name = path
+        .file_name()
+        .expect("cache path has a filename")
+        .to_string_lossy();
+    for attempt in 0..100 {
+        let temporary = directory.join(format!("{name}.tmp-{}-{attempt}", std::process::id()));
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("cannot create {}: {error}", temporary.display())),
+        };
+        let result = file.write_all(bytes).and_then(|_| file.sync_all());
+        drop(file);
+        if let Err(error) = result {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("cannot write {}: {error}", temporary.display()));
+        }
+        let result = fs::rename(&temporary, path)
+            .map_err(|error| format!("cannot publish {}: {error}", path.display()));
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        return result;
+    }
+    Err(format!(
+        "cannot create a unique temporary cache beside {}",
+        path.display()
+    ))
+}
+
+fn add_git_exclude(root: &Path) {
+    let git = root.join(".git");
+    if !git.is_dir() {
+        return;
+    }
+    let info = git.join("info");
+    let exclude = info.join("exclude");
+    let existing = match fs::read_to_string(&exclude) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return,
+    };
+    if existing.lines().any(|line| line.trim() == ".blastray/") {
+        return;
+    }
+    if fs::create_dir_all(&info).is_err() {
+        return;
+    }
+    let mut updated = existing;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str(".blastray/\n");
+    let _ = atomic_write(&exclude, updated.as_bytes());
 }
 
 fn source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -277,7 +489,7 @@ fn relative_path(root: &Path, path: &Path) -> Result<String, String> {
         })
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 struct FileResolution {
     imports: Vec<String>,
     calls: Vec<(String, String)>,
@@ -756,7 +968,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::{Graph, Index, RefreshKind};
+    use super::{CACHE_DIRECTORY, CACHE_FILE, Graph, Index, RefreshKind};
     use crate::query;
 
     static NEXT_REPO: AtomicUsize = AtomicUsize::new(0);
@@ -1071,6 +1283,124 @@ mod tests {
             RefreshKind::FullRebuild
         );
         assert!(query::find(index.graph(), "entry").contains("src/renamed.ts::entry"));
+    }
+
+    fn cache_path(repo: &Repo) -> PathBuf {
+        repo.0.join(CACHE_DIRECTORY).join(CACHE_FILE)
+    }
+
+    fn assert_persistent_equivalent(repo: &Repo) -> Index {
+        let persistent = Index::open(&repo.0).unwrap();
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&persistent, &full);
+        persistent
+    }
+
+    #[test]
+    fn persistent_open_creates_reloads_and_recreates_the_cache() {
+        let repo = repo();
+        assert!(!cache_path(&repo).exists());
+        let first = assert_persistent_equivalent(&repo);
+        assert!(cache_path(&repo).is_file());
+        let second = assert_persistent_equivalent(&repo);
+        assert_eq!(meaning(first.graph()), meaning(second.graph()));
+        fs::remove_dir_all(repo.0.join(CACHE_DIRECTORY)).unwrap();
+        assert_persistent_equivalent(&repo);
+        assert!(cache_path(&repo).is_file());
+    }
+
+    #[test]
+    fn persistent_modified_files_match_a_fresh_build() {
+        let repo = repo();
+        assert_persistent_equivalent(&repo);
+        repo.write(
+            "src/api.ts",
+            "export function saved() {}\nexport function other() {}\n",
+        );
+        let one_modified = assert_persistent_equivalent(&repo);
+        assert!(
+            query::inspect(one_modified.graph(), "src/use.ts::use")
+                .unwrap()
+                .contains("Direct callees: none")
+        );
+        repo.write(
+            "src/use.ts",
+            "import { other } from './api';\nexport function use() { other(); }\n",
+        );
+        repo.write(
+            "src/local.ts",
+            "export function leaf() {}\nexport function entry() { leaf(); leaf(); }\n",
+        );
+        assert_persistent_equivalent(&repo);
+    }
+
+    #[test]
+    fn persistent_file_set_changes_use_safe_rebuilds() {
+        let repo = repo();
+        assert_persistent_equivalent(&repo);
+        repo.write("src/new.ts", "export function fresh() {}\n");
+        assert_persistent_equivalent(&repo);
+        fs::remove_file(repo.0.join("src/new.ts")).unwrap();
+        assert_persistent_equivalent(&repo);
+        fs::rename(repo.0.join("src/local.ts"), repo.0.join("src/renamed.ts")).unwrap();
+        let index = assert_persistent_equivalent(&repo);
+        assert!(query::find(index.graph(), "entry").contains("src/renamed.ts::entry"));
+    }
+
+    #[test]
+    fn corrupt_truncated_and_old_schema_caches_rebuild_safely() {
+        let repo = repo();
+        assert_persistent_equivalent(&repo);
+        fs::write(cache_path(&repo), b"not a cache").unwrap();
+        assert_persistent_equivalent(&repo);
+        fs::write(cache_path(&repo), [1, 2, 3]).unwrap();
+        assert_persistent_equivalent(&repo);
+        let bytes = fs::read(cache_path(&repo)).unwrap();
+        let mut envelope: super::CacheEnvelope = bincode::deserialize(&bytes).unwrap();
+        envelope.schema -= 1;
+        fs::write(cache_path(&repo), bincode::serialize(&envelope).unwrap()).unwrap();
+        assert_persistent_equivalent(&repo);
+        let bytes = fs::read(cache_path(&repo)).unwrap();
+        let mut envelope: super::CacheEnvelope = bincode::deserialize(&bytes).unwrap();
+        let mut cached: super::CachedIndex = bincode::deserialize(&envelope.payload).unwrap();
+        cached.resolved.clear();
+        envelope.payload = bincode::serialize(&cached).unwrap();
+        envelope.checksum = *blake3::hash(&envelope.payload).as_bytes();
+        fs::write(cache_path(&repo), bincode::serialize(&envelope).unwrap()).unwrap();
+        assert_persistent_equivalent(&repo);
+    }
+
+    #[test]
+    fn cache_is_self_excluded_and_git_exclusion_is_idempotent() {
+        let repo = repo();
+        repo.write(".blastray/ignored.ts", "export function hidden() {}\n");
+        repo.write(".gitignore", "keep-this-tracked\n");
+        fs::create_dir_all(repo.0.join(".git/info")).unwrap();
+        fs::write(repo.0.join(".git/info/exclude"), "existing-rule\n").unwrap();
+        let index = assert_persistent_equivalent(&repo);
+        assert_eq!(
+            query::find(index.graph(), "hidden"),
+            "No symbols found for 'hidden'."
+        );
+        assert_eq!(
+            fs::read_to_string(repo.0.join(".gitignore")).unwrap(),
+            "keep-this-tracked\n"
+        );
+        assert_persistent_equivalent(&repo);
+        let exclude = fs::read_to_string(repo.0.join(".git/info/exclude")).unwrap();
+        assert!(exclude.contains("existing-rule"));
+        assert_eq!(
+            exclude.lines().filter(|line| *line == ".blastray/").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn non_git_repositories_persist_normally() {
+        let repo = repo();
+        assert!(!repo.0.join(".git").exists());
+        assert_persistent_equivalent(&repo);
+        assert!(cache_path(&repo).is_file());
     }
 
     fn benchmark_root(label: &str, source_root: &Path) {

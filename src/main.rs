@@ -23,20 +23,16 @@ fn run(args: Vec<String>) -> Result<String, String> {
         [command] if command == "--version" || command == "-V" => {
             Ok(format!("blastray {}", env!("CARGO_PKG_VERSION")))
         }
-        [command, target] if command == "find" => {
-            Ok(query::find(&index::build(Path::new("."))?, target))
-        }
-        [command, target] if command == "inspect" => {
-            query::inspect(&index::build(Path::new("."))?, target)
-        }
-        [command, from, to] if command == "trace" => {
-            query::trace(&index::build(Path::new("."))?, from, to)
-        }
-        [command, target] if command == "impact" => {
-            query::impact(&index::build(Path::new("."))?, target)
-        }
+        [command, target] if command == "find" => Ok(query::find(open_index()?.graph(), target)),
+        [command, target] if command == "inspect" => query::inspect(open_index()?.graph(), target),
+        [command, from, to] if command == "trace" => query::trace(open_index()?.graph(), from, to),
+        [command, target] if command == "impact" => query::impact(open_index()?.graph(), target),
         _ => Err(help()),
     }
+}
+
+fn open_index() -> Result<index::Index, String> {
+    index::Index::open(Path::new("."))
 }
 
 fn help() -> String {
