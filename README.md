@@ -21,6 +21,9 @@ top-level functions, classes, and class methods; resolves only confirmed local
 or relative-imported function calls; and reports uncertainty instead of
 guessing.
 
+The same four primitives are available to MCP-capable coding agents through
+the stdio server: `blastray mcp`.
+
 ## Build and test
 
 ```sh
@@ -37,4 +40,5 @@ blastray inspect src/auth/session.ts::refreshSession
 blastray trace src/a.ts::start src/d.ts::finish
 blastray impact src/auth/session.ts::refreshSession
 blastray impact --diff
+blastray mcp
 ```

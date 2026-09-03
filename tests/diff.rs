@@ -192,6 +192,19 @@ fn reports_unsupported_untracked_and_uncertain_relationships() {
 }
 
 #[test]
+fn unsupported_changed_files_make_completeness_incomplete() {
+    let repo = Repo::new(&[
+        ("src/a.ts", "export function a() {}\n"),
+        ("notes.txt", "original\n"),
+    ]);
+    repo.write("notes.txt", "changed\n");
+    let output = repo.impact();
+    assert!(output.contains("Unsupported changed files:\n- notes.txt"));
+    assert!(output.contains("Completeness: conservative/incomplete"));
+    assert!(output.contains("unsupported changed file notes.txt was not structurally analyzed"));
+}
+
+#[test]
 fn refreshes_persistent_cache_deterministically_and_rejects_old_cache() {
     let repo = Repo::new(&[("src/a.ts", "export function a() {}\n")]);
     let first = repo.impact();

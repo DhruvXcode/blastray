@@ -72,6 +72,10 @@ pub fn impact(graph: &Graph, root: &Path) -> Result<String, String> {
         }
         if !is_source_file(Path::new(&change.path)) {
             unsupported.push(change.path.clone());
+            incomplete.push(format!(
+                "unsupported changed file {} was not structurally analyzed",
+                change.path
+            ));
             continue;
         }
         match change.kind {

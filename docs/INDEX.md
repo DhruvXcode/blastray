@@ -46,3 +46,11 @@ Parsed symbols retain inclusive one-based start and end lines from Tree-sitter.
 class methods therefore win over their enclosing class. The persisted span is
 canonical parse metadata, while graph IDs and adjacency remain reconstructed
 views. Cache schema 2 invalidates caches written before spans existed.
+
+## Mission 5 live synchronization
+
+`Index::sync` compares the live index with current source hashes without
+reloading `.blastray/index.bin`. It keeps unchanged in-memory artifacts,
+incrementally refreshes modified existing supported files, or rebuilds and
+persists on a source file-set change or uncertain refresh. MCP uses this before
+each tool call.

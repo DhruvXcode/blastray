@@ -177,29 +177,39 @@ impl Index {
             .canonicalize()
             .map_err(|error| format!("cannot read repository root {}: {error}", root.display()))?;
         add_git_exclude(&root);
-        let current_hashes = source_hashes(&root)?;
         let mut index = match Self::load(&root) {
-            Some(index) if index.hashes.keys().eq(current_hashes.keys()) => index,
-            _ => return Self::build_and_persist(root, current_hashes),
+            Some(index) => index,
+            None => return Self::build_and_persist(root.clone(), source_hashes(&root)?),
         };
+        index.root = root;
+        index.sync()?;
+        Ok(index)
+    }
 
+    pub fn sync(&mut self) -> Result<(), String> {
+        let current_hashes = source_hashes(&self.root)?;
+        if !self.hashes.keys().eq(current_hashes.keys()) {
+            *self = Self::build_with_hashes(self.root.clone(), current_hashes)?;
+            self.persist()?;
+            return Ok(());
+        }
         let modified: Vec<String> = current_hashes
             .iter()
-            .filter(|(path, hash)| index.hashes.get(*path) != Some(*hash))
+            .filter(|(path, hash)| self.hashes.get(*path) != Some(*hash))
             .map(|(path, _)| path.clone())
             .collect();
         if modified.is_empty() {
-            index.root = root;
-            return Ok(index);
+            return Ok(());
         }
         for path in modified {
-            if index.refresh(Path::new(&path))? == RefreshKind::FullRebuild {
-                return Self::build_and_persist(root, current_hashes);
+            if self.refresh(Path::new(&path))? == RefreshKind::FullRebuild {
+                *self = Self::build_with_hashes(self.root.clone(), current_hashes)?;
+                self.persist()?;
+                return Ok(());
             }
         }
-        index.hashes = current_hashes;
-        index.persist()?;
-        Ok(index)
+        self.hashes = current_hashes;
+        self.persist()
     }
 
     fn build_and_persist(

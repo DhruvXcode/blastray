@@ -1,10 +1,20 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use blastray::{diff, index, query};
+use blastray::{diff, index, mcp, query};
 
 fn main() -> ExitCode {
-    match run(std::env::args().skip(1).collect()) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.as_slice() == ["mcp"] {
+        return match mcp::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    match run(args) {
         Ok(output) => {
             println!("{output}");
             ExitCode::SUCCESS
@@ -40,5 +50,5 @@ fn open_index() -> Result<index::Index, String> {
 }
 
 fn help() -> String {
-    "BlastRay — code intelligence for coding agents\n\nUsage:\n  blastray find <query>\n  blastray inspect <target>\n  blastray trace <from> <to>\n  blastray impact <target>\n  blastray impact --diff\n\nTargets accept a canonical symbol identity such as src/auth/session.ts::refreshSession.".to_string()
+    "BlastRay — code intelligence for coding agents\n\nUsage:\n  blastray find <query>\n  blastray inspect <target>\n  blastray trace <from> <to>\n  blastray impact <target>\n  blastray impact --diff\n  blastray mcp\n\nTargets accept a canonical symbol identity such as src/auth/session.ts::refreshSession.".to_string()
 }

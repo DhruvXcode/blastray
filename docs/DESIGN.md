@@ -65,3 +65,11 @@ merged reverse-CALLS traversal. Deleted lines consult only the matching HEAD
 file, never a historical graph. Lines outside indexed symbols use explicit
 file-level roots; unsupported, added, deleted, renamed, untracked, unresolved,
 ambiguous, or truncated portions make completeness conservative/incomplete.
+
+## Mission 5 boundary
+
+`blastray mcp` is one stdio MCP process for the repository in its working
+directory. It exposes only `find`, `inspect`, `trace`, and `impact`, and holds
+one live `Index` behind a mutex. Each tool call synchronizes source hashes and
+uses the existing incremental/full-rebuild rules before answering; no watcher,
+agent files, prompts, resources, or alternate graph format is added.

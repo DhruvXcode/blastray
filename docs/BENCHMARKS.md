@@ -114,3 +114,32 @@ These are single release-mode runs on this environment. The fixture result is
 conservative/incomplete because the changed file contains an unrelated
 unresolved receiver call; the GitNexus result is conservative/incomplete due to
 unsupported/import and receiver relationships in its changed file.
+
+## Mission 5 MCP and diff timing probe
+
+The Mission 4 2.440 s GitNexus result was investigated before optimization.
+On a warm disposable copy, a fresh CLI `find` (load/check the 17,570,026-byte
+cache plus hash validation) took 0.333 s and a changed-file CLI `impact --diff`
+took 0.690 s. Direct Git portions of that latter run were small: name-status
+0.020 s, unified diff 0.019 s, untracked status 0.060 s, and `HEAD:path`
+retrieval 0.003 s. In a live MCP process, changed-file synchronization took
+0.325 s; after that synchronization, `impact("@diff")` took 0.252 s. That
+post-sync time includes another whole-tree hash validation; its direct Git work
+was about 0.102 s, leaving a small old-file parse/mapping/traversal remainder.
+
+The measured major avoidable repeated-agent cost was reloading/deserializing
+the cache for each process, not Git itself. Mission 5 therefore makes no risky
+Git/cache redesign: the MCP process holds one index and uses `Index::sync`.
+
+Release-mode MCP measurements used JSON-RPC stdio against one persistent
+process, after a normal initialize request:
+
+| repository | startup/index open | unchanged `find` | unchanged `impact` | `impact("@diff")` after one edit |
+| --- | ---: | ---: | ---: | ---: |
+| `tests/fixtures/basic` | 0.009 s | 0.001 s | 0.001 s | 0.019 s |
+| pinned GitNexus | 4.489 s | 0.127 s | 0.122 s | 2.266 s |
+
+The first GitNexus changed-diff result includes an initially cold persistent
+cache write. A subsequent source edit in the same live process measured 0.325
+s for sync and 0.252 s for post-sync diff analysis. These are one-run,
+environment-specific measurements, not public performance claims.
