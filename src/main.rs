@@ -1,9 +1,7 @@
-mod index;
-mod parse;
-mod query;
-
 use std::path::Path;
 use std::process::ExitCode;
+
+use blastray::{index, query};
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {

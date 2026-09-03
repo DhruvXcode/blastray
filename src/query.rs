@@ -34,8 +34,8 @@ pub fn find(graph: &Graph, query: &str) -> String {
 pub fn inspect(graph: &Graph, target: &str) -> Result<String, String> {
     let target = select(graph, target)?;
     let symbol = &graph.symbols[target];
-    let callers = callers(graph, target);
-    let callees = callees(graph, target);
+    let callers = graph.callers(target);
+    let callees = graph.callees(target);
     let issues = issues_for(graph, symbol);
     let defining_file = graph
         .defining_file(target)
@@ -46,11 +46,11 @@ pub fn inspect(graph: &Graph, target: &str) -> Result<String, String> {
         symbol_line(graph, symbol),
         graph.files[defining_file].path
     );
-    append_symbols(&mut output, graph, &callers);
+    append_symbols(&mut output, graph, callers);
     output.push_str("\nDirect callees:");
-    append_symbols(&mut output, graph, &callees);
+    append_symbols(&mut output, graph, callees);
     output.push_str("\nDefining file imports:");
-    append_files(&mut output, graph, &imports);
+    append_files(&mut output, graph, imports);
     output.push_str("\nUnresolved or ambiguous outgoing calls:");
     if issues.is_empty() {
         output.push_str(" none");
@@ -80,7 +80,7 @@ pub fn trace(graph: &Graph, from: &str, to: &str) -> Result<String, String> {
         if current == to || visited.len() >= MAX_TRAVERSAL {
             break;
         }
-        for next in callees(graph, current) {
+        for &next in graph.callees(current) {
             if visited.insert(next) {
                 previous.insert(next, current);
                 queue.push_back(next);
@@ -124,7 +124,7 @@ pub fn impact(graph: &Graph, target: &str) -> Result<String, String> {
         if visited.len() >= MAX_TRAVERSAL {
             break;
         }
-        for caller in callers(graph, current) {
+        for &caller in graph.callers(current) {
             if visited.insert(caller) {
                 by_depth.entry(depth + 1).or_default().push(caller);
                 queue.push_back((caller, depth + 1));
@@ -196,36 +196,6 @@ fn select(graph: &Graph, selector: &str) -> Result<usize, String> {
             Err(output)
         }
     }
-}
-
-fn callers(graph: &Graph, target: usize) -> Vec<usize> {
-    let mut callers: Vec<usize> = graph
-        .calls
-        .iter()
-        .filter_map(|edge| (edge.to == target).then_some(edge.from))
-        .collect();
-    callers.sort_by(|left, right| {
-        graph.symbols[*left]
-            .canonical
-            .cmp(&graph.symbols[*right].canonical)
-    });
-    callers.dedup();
-    callers
-}
-
-fn callees(graph: &Graph, source: usize) -> Vec<usize> {
-    let mut callees: Vec<usize> = graph
-        .calls
-        .iter()
-        .filter_map(|edge| (edge.from == source).then_some(edge.to))
-        .collect();
-    callees.sort_by(|left, right| {
-        graph.symbols[*left]
-            .canonical
-            .cmp(&graph.symbols[*right].canonical)
-    });
-    callees.dedup();
-    callees
 }
 
 fn issues_for<'a>(graph: &'a Graph, symbol: &Symbol) -> Vec<&'a RelationshipIssue> {

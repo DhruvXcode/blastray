@@ -38,8 +38,6 @@ pub struct Symbol {
     pub line: usize,
     pub column: usize,
     pub kind: SymbolKind,
-    exported: bool,
-    default_export: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -85,7 +83,7 @@ pub struct RelationshipIssue {
     pub detail: String,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Graph {
     pub files: Vec<File>,
     pub symbols: Vec<Symbol>,
@@ -93,56 +91,148 @@ pub struct Graph {
     pub imports: Vec<ImportEdge>,
     pub calls: Vec<CallEdge>,
     pub issues: Vec<RelationshipIssue>,
+    imports_from: Vec<Vec<usize>>,
+    callers_of: Vec<Vec<usize>>,
+    callees_of: Vec<Vec<usize>>,
+    canonical_symbols: BTreeMap<String, Vec<usize>>,
+    named_symbols: BTreeMap<String, Vec<usize>>,
 }
 
 impl Graph {
     pub fn defining_file(&self, symbol: usize) -> Option<usize> {
-        self.defines
-            .iter()
-            .find_map(|edge| (edge.symbol == symbol).then_some(edge.file))
+        self.symbols.get(symbol).map(|item| item.file)
     }
 
-    pub fn imported_files(&self, file: usize) -> Vec<usize> {
-        self.imports
-            .iter()
-            .filter_map(|edge| (edge.from == file).then_some(edge.to))
-            .collect()
+    pub fn imported_files(&self, file: usize) -> &[usize] {
+        self.imports_from
+            .get(file)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn callers(&self, symbol: usize) -> &[usize] {
+        self.callers_of
+            .get(symbol)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn callees(&self, symbol: usize) -> &[usize] {
+        self.callees_of
+            .get(symbol)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     pub fn symbol_candidates(&self, selector: &str) -> Vec<usize> {
-        let exact: Vec<usize> = self
-            .symbols
-            .iter()
-            .enumerate()
-            .filter_map(|(index, symbol)| (symbol.canonical == selector).then_some(index))
+        self.canonical_symbols
+            .get(selector)
+            .filter(|ids| !ids.is_empty())
+            .cloned()
+            .or_else(|| self.named_symbols.get(selector).cloned())
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RefreshKind {
+    Incremental,
+    FullRebuild,
+}
+
+pub struct Index {
+    root: PathBuf,
+    parsed: BTreeMap<String, ParsedFile>,
+    resolved: BTreeMap<String, FileResolution>,
+    graph: Graph,
+}
+
+impl Index {
+    pub fn build(root: &Path) -> Result<Self, String> {
+        let root = root
+            .canonicalize()
+            .map_err(|error| format!("cannot read repository root {}: {error}", root.display()))?;
+        let mut parsed = BTreeMap::new();
+        for path in source_files(&root)? {
+            let relative = relative_path(&root, &path)?;
+            let source = std::fs::read_to_string(&path)
+                .map_err(|error| format!("cannot read {relative}: {error}"))?;
+            parsed.insert(relative.clone(), parse_file(&relative, &source)?);
+        }
+        let context = ResolveContext::new(&parsed);
+        let resolved = parsed
+            .values()
+            .map(|file| (file.path.clone(), resolve_file(file, &context)))
             .collect();
-        if !exact.is_empty() {
-            return exact;
+        let graph = materialize_graph(&parsed, &resolved);
+        Ok(Self {
+            root,
+            parsed,
+            resolved,
+            graph,
+        })
+    }
+
+    pub fn graph(&self) -> &Graph {
+        &self.graph
+    }
+
+    pub fn refresh(&mut self, modified_path: &Path) -> Result<RefreshKind, String> {
+        let relative = match self.relative_refresh_path(modified_path) {
+            Some(path) => path,
+            None => return self.full_rebuild(),
+        };
+        let source_path = self.root.join(&relative);
+        if !is_source_file(Path::new(&relative))
+            || !self.parsed.contains_key(&relative)
+            || !source_path.is_file()
+        {
+            return self.full_rebuild();
         }
 
-        self.symbols
+        let importers = self.direct_importers(&relative);
+        let source = std::fs::read_to_string(&source_path)
+            .map_err(|error| format!("cannot read {relative}: {error}"))?;
+        self.parsed
+            .insert(relative.clone(), parse_file(&relative, &source)?);
+
+        let context = ResolveContext::new(&self.parsed);
+        let mut affected = importers;
+        affected.insert(relative);
+        for path in affected {
+            let file = self
+                .parsed
+                .get(&path)
+                .expect("affected files remain in the parsed index");
+            self.resolved.insert(path, resolve_file(file, &context));
+        }
+        self.graph = materialize_graph(&self.parsed, &self.resolved);
+        Ok(RefreshKind::Incremental)
+    }
+
+    fn relative_refresh_path(&self, path: &Path) -> Option<String> {
+        if path.is_absolute() {
+            return relative_path(&self.root, path).ok();
+        }
+        normalize_relative(path)
+    }
+
+    fn direct_importers(&self, target: &str) -> BTreeSet<String> {
+        self.resolved
             .iter()
-            .enumerate()
-            .filter_map(|(index, symbol)| (symbol.name == selector).then_some(index))
+            .filter(|(_, facts)| facts.imports.iter().any(|import| import == target))
+            .map(|(path, _)| path.clone())
             .collect()
+    }
+
+    fn full_rebuild(&mut self) -> Result<RefreshKind, String> {
+        *self = Self::build(&self.root)?;
+        Ok(RefreshKind::FullRebuild)
     }
 }
 
 pub fn build(root: &Path) -> Result<Graph, String> {
-    let root = root
-        .canonicalize()
-        .map_err(|error| format!("cannot read repository root {}: {error}", root.display()))?;
-    let paths = source_files(&root)?;
-    let mut parsed = Vec::with_capacity(paths.len());
-
-    for path in paths {
-        let relative = relative_path(&root, &path)?;
-        let source = std::fs::read_to_string(&path)
-            .map_err(|error| format!("cannot read {relative}: {error}"))?;
-        parsed.push(parse_file(&relative, &source)?);
-    }
-
-    Ok(resolve(parsed))
+    Ok(Index::build(root)?.graph)
 }
 
 fn source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -159,14 +249,12 @@ fn source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
             })
         })
         .build();
-
     for entry in walker {
         let entry = entry.map_err(|error| format!("cannot walk {}: {error}", root.display()))?;
         if entry.file_type().is_some_and(|kind| kind.is_file()) && is_source_file(entry.path()) {
             paths.push(entry.into_path());
         }
     }
-
     paths.sort();
     Ok(paths)
 }
@@ -189,231 +277,162 @@ fn relative_path(root: &Path, path: &Path) -> Result<String, String> {
         })
 }
 
-fn resolve(parsed: Vec<ParsedFile>) -> Graph {
-    let files: Vec<File> = parsed
-        .iter()
-        .map(|file| File {
-            path: file.path.clone(),
-        })
-        .collect();
-    let file_ids: BTreeMap<String, usize> = files
-        .iter()
-        .enumerate()
-        .map(|(index, file)| (file.path.clone(), index))
-        .collect();
-    let mut drafts: Vec<SymbolDraft> = parsed
-        .iter()
-        .flat_map(|file| file.symbols.clone())
-        .collect();
-    drafts.sort_by(|left, right| left.canonical.cmp(&right.canonical));
+#[derive(Default)]
+struct FileResolution {
+    imports: Vec<String>,
+    calls: Vec<(String, String)>,
+    issues: Vec<RelationshipIssue>,
+}
 
-    let symbols: Vec<Symbol> = drafts
-        .iter()
-        .map(|draft| Symbol {
-            canonical: draft.canonical.clone(),
-            name: draft.name.clone(),
-            file: file_ids[&draft.file],
-            line: draft.line,
-            column: draft.column,
-            kind: draft.kind,
-            exported: draft.exported,
-            default_export: draft.default_export,
-        })
-        .collect();
-    let defines: Vec<DefineEdge> = symbols
-        .iter()
-        .enumerate()
-        .map(|(symbol, item)| DefineEdge {
-            file: item.file,
-            symbol,
-        })
-        .collect();
-    let canonical_ids = ids_by(&symbols, |symbol| symbol.canonical.clone());
-    let local_function_ids = ids_by_function(&symbols, &files);
-    let exports = export_ids(&symbols);
-    let mut resolution = Resolution::default();
+struct ResolveContext {
+    files: BTreeSet<String>,
+    canonical_symbols: BTreeMap<String, Vec<String>>,
+    local_functions: BTreeMap<(String, String), Vec<String>>,
+    exports: BTreeMap<(String, String, bool), Vec<String>>,
+}
 
-    for file in &parsed {
-        let file_id = file_ids[&file.path];
-        for import in &file.imports {
-            resolve_import(
-                import,
-                file_id,
-                &file.path,
-                &file_ids,
-                &exports,
-                &mut resolution,
-            );
-        }
-    }
-
-    let mut calls = Vec::new();
-    for file in &parsed {
-        for draft in &file.symbols {
-            let Some(source_ids) = canonical_ids.get(&draft.canonical) else {
-                continue;
-            };
-            if source_ids.len() != 1 {
-                continue;
-            }
-            let source = source_ids[0];
-            for call in &draft.calls {
-                if !call.direct {
-                    resolution.issues.push(issue(
-                        RelationshipStatus::Unresolved,
-                        &draft.canonical,
-                        call.line,
-                        call.column,
-                        &call.name,
-                        "receiver or dynamic call syntax is outside the Mission 1 subset",
-                    ));
-                    continue;
+impl ResolveContext {
+    fn new(parsed: &BTreeMap<String, ParsedFile>) -> Self {
+        let mut context = Self {
+            files: parsed.keys().cloned().collect(),
+            canonical_symbols: BTreeMap::new(),
+            local_functions: BTreeMap::new(),
+            exports: BTreeMap::new(),
+        };
+        for file in parsed.values() {
+            for symbol in &file.symbols {
+                context
+                    .canonical_symbols
+                    .entry(symbol.canonical.clone())
+                    .or_default()
+                    .push(symbol.canonical.clone());
+                if symbol.kind == SymbolKind::Function {
+                    context
+                        .local_functions
+                        .entry((file.path.clone(), symbol.name.clone()))
+                        .or_default()
+                        .push(symbol.canonical.clone());
+                    if symbol.exported {
+                        context
+                            .exports
+                            .entry((file.path.clone(), symbol.name.clone(), false))
+                            .or_default()
+                            .push(symbol.canonical.clone());
+                    }
                 }
-                if draft.shadowed.contains(&call.name) {
-                    resolution.issues.push(issue(
-                        RelationshipStatus::Unresolved,
-                        &draft.canonical,
-                        call.line,
-                        call.column,
-                        &call.name,
-                        "an unmodeled local binding could shadow this name",
-                    ));
-                    continue;
-                }
-
-                let key = (file.path.clone(), call.name.clone());
-                let mut candidates = local_function_ids.get(&key).cloned().unwrap_or_default();
-                candidates.extend(binding_targets(
-                    resolution.bindings.get(&key),
-                    &mut resolution.issues,
-                    &draft.canonical,
-                    call,
-                ));
-                candidates.sort_unstable();
-                candidates.dedup();
-
-                match candidates.as_slice() {
-                    [target] => calls.push(CallEdge {
-                        from: source,
-                        to: *target,
-                    }),
-                    [] if !resolution.bindings.contains_key(&key) => resolution.issues.push(issue(
-                        RelationshipStatus::Unresolved,
-                        &draft.canonical,
-                        call.line,
-                        call.column,
-                        &call.name,
-                        "no matching local function or resolved import",
-                    )),
-                    [] => {}
-                    _ => resolution.issues.push(issue(
-                        RelationshipStatus::Ambiguous,
-                        &draft.canonical,
-                        call.line,
-                        call.column,
-                        &call.name,
-                        "multiple callable definitions match this name",
-                    )),
+                if symbol.default_export {
+                    context
+                        .exports
+                        .entry((file.path.clone(), String::new(), true))
+                        .or_default()
+                        .push(symbol.canonical.clone());
                 }
             }
         }
-    }
-
-    resolution.imports.sort_by_key(|edge| (edge.from, edge.to));
-    resolution.imports.dedup_by_key(|edge| (edge.from, edge.to));
-    calls.sort_by(|left, right| {
-        symbols[left.from]
-            .canonical
-            .cmp(&symbols[right.from].canonical)
-            .then_with(|| symbols[left.to].canonical.cmp(&symbols[right.to].canonical))
-    });
-    calls.dedup_by_key(|edge| (edge.from, edge.to));
-    resolution.issues.sort_by(|left, right| {
-        left.source
-            .cmp(&right.source)
-            .then(left.line.cmp(&right.line))
-            .then(left.column.cmp(&right.column))
-            .then(left.name.cmp(&right.name))
-            .then(left.detail.cmp(&right.detail))
-    });
-
-    Graph {
-        files,
-        symbols,
-        defines,
-        imports: resolution.imports,
-        calls,
-        issues: resolution.issues,
+        context
     }
 }
 
-fn ids_by<T>(symbols: &[Symbol], key: impl Fn(&Symbol) -> T) -> BTreeMap<T, Vec<usize>>
-where
-    T: Ord,
-{
-    let mut ids = BTreeMap::new();
-    for (index, symbol) in symbols.iter().enumerate() {
-        ids.entry(key(symbol)).or_insert_with(Vec::new).push(index);
-    }
-    ids
-}
-
-fn ids_by_function(symbols: &[Symbol], files: &[File]) -> BTreeMap<(String, String), Vec<usize>> {
-    let mut ids = BTreeMap::new();
-    for (index, symbol) in symbols.iter().enumerate() {
-        if symbol.kind == SymbolKind::Function {
-            ids.entry((files[symbol.file].path.clone(), symbol.name.clone()))
-                .or_insert_with(Vec::new)
-                .push(index);
-        }
-    }
-    ids
-}
-
-fn export_ids(symbols: &[Symbol]) -> BTreeMap<(usize, String, bool), Vec<usize>> {
-    let mut ids = BTreeMap::new();
-    for (index, symbol) in symbols.iter().enumerate() {
-        if symbol.exported && symbol.kind == SymbolKind::Function {
-            ids.entry((symbol.file, symbol.name.clone(), false))
-                .or_insert_with(Vec::new)
-                .push(index);
-        }
-        if symbol.default_export {
-            ids.entry((symbol.file, String::new(), true))
-                .or_insert_with(Vec::new)
-                .push(index);
-        }
-    }
-    ids
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum BindingTarget {
-    Resolved(usize),
+    Resolved(String),
     Unresolved,
     Ambiguous,
 }
 
-#[derive(Default)]
-struct Resolution {
-    imports: Vec<ImportEdge>,
-    bindings: BTreeMap<(String, String), Vec<BindingTarget>>,
-    issues: Vec<RelationshipIssue>,
+fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> FileResolution {
+    let mut result = FileResolution::default();
+    let mut bindings = BTreeMap::new();
+    for import in &file.imports {
+        resolve_import(import, file, context, &mut bindings, &mut result);
+    }
+    for draft in &file.symbols {
+        if context
+            .canonical_symbols
+            .get(&draft.canonical)
+            .is_none_or(|symbols| symbols.len() != 1)
+        {
+            continue;
+        }
+        for call in &draft.calls {
+            if !call.direct {
+                result.issues.push(issue(
+                    RelationshipStatus::Unresolved,
+                    &draft.canonical,
+                    call.line,
+                    call.column,
+                    &call.name,
+                    "receiver or dynamic call syntax is outside the Mission 1 subset",
+                ));
+                continue;
+            }
+            if draft.shadowed.contains(&call.name) {
+                result.issues.push(issue(
+                    RelationshipStatus::Unresolved,
+                    &draft.canonical,
+                    call.line,
+                    call.column,
+                    &call.name,
+                    "an unmodeled local binding could shadow this name",
+                ));
+                continue;
+            }
+            let key = (file.path.clone(), call.name.clone());
+            let mut candidates = context
+                .local_functions
+                .get(&key)
+                .cloned()
+                .unwrap_or_default();
+            candidates.extend(binding_targets(
+                bindings.get(&key),
+                &mut result.issues,
+                &draft.canonical,
+                call,
+            ));
+            candidates.sort();
+            candidates.dedup();
+            match candidates.as_slice() {
+                [target] => result.calls.push((draft.canonical.clone(), target.clone())),
+                [] if !bindings.contains_key(&key) => result.issues.push(issue(
+                    RelationshipStatus::Unresolved,
+                    &draft.canonical,
+                    call.line,
+                    call.column,
+                    &call.name,
+                    "no matching local function or resolved import",
+                )),
+                [] => {}
+                _ => result.issues.push(issue(
+                    RelationshipStatus::Ambiguous,
+                    &draft.canonical,
+                    call.line,
+                    call.column,
+                    &call.name,
+                    "multiple callable definitions match this name",
+                )),
+            }
+        }
+    }
+    result.imports.sort();
+    result.imports.dedup();
+    result.calls.sort();
+    result.calls.dedup();
+    result.issues.sort_by(issue_order);
+    result
 }
 
 fn resolve_import(
     import: &ImportDraft,
-    from: usize,
-    from_path: &str,
-    files: &BTreeMap<String, usize>,
-    exports: &BTreeMap<(usize, String, bool), Vec<usize>>,
-    resolution: &mut Resolution,
+    file: &ParsedFile,
+    context: &ResolveContext,
+    bindings: &mut BTreeMap<(String, String), Vec<BindingTarget>>,
+    result: &mut FileResolution,
 ) {
-    let candidates = module_candidates(from_path, &import.module, files);
+    let candidates = module_candidates(&file.path, &import.module, &context.files);
     let target = match candidates.as_slice() {
         [target] => {
-            resolution.imports.push(ImportEdge { from, to: *target });
-            Some(*target)
+            result.imports.push(target.clone());
+            Some(target.clone())
         }
         [] => {
             let detail = if import.module.starts_with("./") || import.module.starts_with("../") {
@@ -421,9 +440,9 @@ fn resolve_import(
             } else {
                 "non-relative module imports are unsupported"
             };
-            resolution.issues.push(issue(
+            result.issues.push(issue(
                 RelationshipStatus::Unresolved,
-                from_path,
+                &file.path,
                 import.line,
                 import.column,
                 &import.module,
@@ -432,9 +451,9 @@ fn resolve_import(
             None
         }
         _ => {
-            resolution.issues.push(issue(
+            result.issues.push(issue(
                 RelationshipStatus::Ambiguous,
-                from_path,
+                &file.path,
                 import.line,
                 import.column,
                 &import.module,
@@ -443,29 +462,32 @@ fn resolve_import(
             None
         }
     };
-
     if let Some(detail) = &import.unsupported {
-        resolution.issues.push(issue(
+        result.issues.push(issue(
             RelationshipStatus::Unresolved,
-            from_path,
+            &file.path,
             import.line,
             import.column,
             &import.module,
             detail,
         ));
     }
-
     for binding in &import.bindings {
-        let key = (from_path.to_string(), binding.local().to_string());
+        let key = (file.path.clone(), binding.local().to_string());
         let value = if import.type_only {
             BindingTarget::Unresolved
-        } else if let Some(target) = target {
+        } else if let Some(target) = &target {
             let export_key = match binding {
-                ImportBinding::Named { imported, .. } => (target, imported.clone(), false),
-                ImportBinding::Default { .. } => (target, String::new(), true),
+                ImportBinding::Named { imported, .. } => (target.clone(), imported.clone(), false),
+                ImportBinding::Default { .. } => (target.clone(), String::new(), true),
             };
-            match exports.get(&export_key).map(Vec::as_slice).unwrap_or(&[]) {
-                [symbol] => BindingTarget::Resolved(*symbol),
+            match context
+                .exports
+                .get(&export_key)
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+            {
+                [symbol] => BindingTarget::Resolved(symbol.clone()),
                 [] => BindingTarget::Unresolved,
                 _ => BindingTarget::Ambiguous,
             }
@@ -474,7 +496,6 @@ fn resolve_import(
         } else {
             BindingTarget::Unresolved
         };
-
         if !matches!(value, BindingTarget::Resolved(_)) {
             let detail = if import.type_only {
                 "type-only imports are not callable"
@@ -483,19 +504,19 @@ fn resolve_import(
             } else {
                 "the imported binding cannot be resolved until its module is resolved"
             };
-            resolution.issues.push(issue(
+            result.issues.push(issue(
                 match value {
                     BindingTarget::Ambiguous => RelationshipStatus::Ambiguous,
                     _ => RelationshipStatus::Unresolved,
                 },
-                from_path,
+                &file.path,
                 import.line,
                 import.column,
                 binding.local(),
                 detail,
             ));
         }
-        resolution.bindings.entry(key).or_default().push(value);
+        bindings.entry(key).or_default().push(value);
     }
 }
 
@@ -504,7 +525,7 @@ fn binding_targets(
     issues: &mut Vec<RelationshipIssue>,
     source: &str,
     call: &crate::parse::CallDraft,
-) -> Vec<usize> {
+) -> Vec<String> {
     let Some(entries) = entries else {
         return Vec::new();
     };
@@ -513,7 +534,7 @@ fn binding_targets(
     let mut ambiguous = false;
     for entry in entries {
         match entry {
-            BindingTarget::Resolved(target) => targets.push(*target),
+            BindingTarget::Resolved(target) => targets.push(target.clone()),
             BindingTarget::Unresolved => unresolved = true,
             BindingTarget::Ambiguous => ambiguous = true,
         }
@@ -536,7 +557,123 @@ fn binding_targets(
     targets
 }
 
-fn module_candidates(from: &str, request: &str, files: &BTreeMap<String, usize>) -> Vec<usize> {
+fn materialize_graph(
+    parsed: &BTreeMap<String, ParsedFile>,
+    resolved: &BTreeMap<String, FileResolution>,
+) -> Graph {
+    let files: Vec<File> = parsed.keys().cloned().map(|path| File { path }).collect();
+    let file_ids: BTreeMap<String, usize> = files
+        .iter()
+        .enumerate()
+        .map(|(id, file)| (file.path.clone(), id))
+        .collect();
+    let mut drafts: Vec<SymbolDraft> = parsed
+        .values()
+        .flat_map(|file| file.symbols.clone())
+        .collect();
+    drafts.sort_by(|left, right| left.canonical.cmp(&right.canonical));
+    let symbols: Vec<Symbol> = drafts
+        .iter()
+        .map(|draft| Symbol {
+            canonical: draft.canonical.clone(),
+            name: draft.name.clone(),
+            file: file_ids[&draft.file],
+            line: draft.line,
+            column: draft.column,
+            kind: draft.kind,
+        })
+        .collect();
+    let defines: Vec<DefineEdge> = symbols
+        .iter()
+        .enumerate()
+        .map(|(symbol, item)| DefineEdge {
+            file: item.file,
+            symbol,
+        })
+        .collect();
+    let canonical_symbols = ids_by(&symbols, |symbol| symbol.canonical.clone());
+    let named_symbols = ids_by(&symbols, |symbol| symbol.name.clone());
+    let mut imports = Vec::new();
+    let mut calls = Vec::new();
+    let mut issues = Vec::new();
+    for (path, facts) in resolved {
+        let from = file_ids[path];
+        imports.extend(
+            facts
+                .imports
+                .iter()
+                .filter_map(|target| file_ids.get(target).map(|to| ImportEdge { from, to: *to })),
+        );
+        calls.extend(facts.calls.iter().filter_map(|(from, to)| {
+            match (
+                canonical_symbols.get(from).map(Vec::as_slice),
+                canonical_symbols.get(to).map(Vec::as_slice),
+            ) {
+                (Some([from]), Some([to])) => Some(CallEdge {
+                    from: *from,
+                    to: *to,
+                }),
+                _ => None,
+            }
+        }));
+        issues.extend(facts.issues.iter().cloned());
+    }
+    imports.sort_by_key(|edge| (edge.from, edge.to));
+    imports.dedup_by_key(|edge| (edge.from, edge.to));
+    calls.sort_by(|left, right| {
+        symbols[left.from]
+            .canonical
+            .cmp(&symbols[right.from].canonical)
+            .then_with(|| symbols[left.to].canonical.cmp(&symbols[right.to].canonical))
+    });
+    calls.dedup_by_key(|edge| (edge.from, edge.to));
+    issues.sort_by(issue_order);
+
+    let mut imports_from = vec![Vec::new(); files.len()];
+    for edge in &imports {
+        imports_from[edge.from].push(edge.to);
+    }
+    let mut callers_of = vec![Vec::new(); symbols.len()];
+    let mut callees_of = vec![Vec::new(); symbols.len()];
+    for edge in &calls {
+        callees_of[edge.from].push(edge.to);
+        callers_of[edge.to].push(edge.from);
+    }
+    for adjacency in callers_of.iter_mut().chain(callees_of.iter_mut()) {
+        adjacency.sort_by(|left, right| symbols[*left].canonical.cmp(&symbols[*right].canonical));
+        adjacency.dedup();
+    }
+    for imports in &mut imports_from {
+        imports.sort_by(|left, right| files[*left].path.cmp(&files[*right].path));
+        imports.dedup();
+    }
+    Graph {
+        files,
+        symbols,
+        defines,
+        imports,
+        calls,
+        issues,
+        imports_from,
+        callers_of,
+        callees_of,
+        canonical_symbols,
+        named_symbols,
+    }
+}
+
+fn ids_by<T>(symbols: &[Symbol], key: impl Fn(&Symbol) -> T) -> BTreeMap<T, Vec<usize>>
+where
+    T: Ord,
+{
+    let mut ids = BTreeMap::new();
+    for (index, symbol) in symbols.iter().enumerate() {
+        ids.entry(key(symbol)).or_insert_with(Vec::new).push(index);
+    }
+    ids
+}
+
+fn module_candidates(from: &str, request: &str, files: &BTreeSet<String>) -> Vec<String> {
     if !request.starts_with("./") && !request.starts_with("../") {
         return Vec::new();
     }
@@ -564,14 +701,10 @@ fn module_candidates(from: &str, request: &str, files: &BTreeMap<String, usize>)
     candidates.into_iter().collect()
 }
 
-fn insert_candidate(
-    path: &Path,
-    files: &BTreeMap<String, usize>,
-    candidates: &mut BTreeSet<usize>,
-) {
+fn insert_candidate(path: &Path, files: &BTreeSet<String>, candidates: &mut BTreeSet<String>) {
     let key = path.to_string_lossy().replace('\\', "/");
-    if let Some(file) = files.get(&key) {
-        candidates.insert(*file);
+    if files.contains(&key) {
+        candidates.insert(key);
     }
 }
 
@@ -605,5 +738,380 @@ fn issue(
         column,
         name: name.to_string(),
         detail: detail.to_string(),
+    }
+}
+
+fn issue_order(left: &RelationshipIssue, right: &RelationshipIssue) -> std::cmp::Ordering {
+    left.source
+        .cmp(&right.source)
+        .then(left.line.cmp(&right.line))
+        .then(left.column.cmp(&right.column))
+        .then(left.name.cmp(&right.name))
+        .then(left.detail.cmp(&right.detail))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::{Graph, Index, RefreshKind};
+    use crate::query;
+
+    static NEXT_REPO: AtomicUsize = AtomicUsize::new(0);
+
+    struct Repo(PathBuf);
+
+    impl Repo {
+        fn new(files: &[(&str, &str)]) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "blastray-index-test-{}-{}",
+                std::process::id(),
+                NEXT_REPO.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&path).unwrap();
+            let repo = Self(path);
+            for (file, source) in files {
+                repo.write(file, source);
+            }
+            repo
+        }
+
+        fn write(&self, file: &str, source: &str) {
+            let path = self.0.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, source).unwrap();
+        }
+    }
+
+    impl Drop for Repo {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn repo() -> Repo {
+        Repo::new(&[
+            (
+                "src/api.ts",
+                "export function save() {}\nexport function other() {}\n",
+            ),
+            (
+                "src/use.ts",
+                "import { save } from './api';\nexport function use() { save(); }\n",
+            ),
+            (
+                "src/local.ts",
+                "export function leaf() {}\nexport function entry() { leaf(); }\n",
+            ),
+            (
+                "src/cycle.ts",
+                "export function a() { b(); }\nexport function b() { a(); }\n",
+            ),
+        ])
+    }
+
+    fn meaning(graph: &Graph) -> String {
+        let mut result = String::new();
+        for file in &graph.files {
+            result.push_str(&format!("F:{}\n", file.path));
+        }
+        for symbol in &graph.symbols {
+            result.push_str(&format!(
+                "S:{}:{:?}:{}:{}\n",
+                symbol.canonical, symbol.kind, symbol.line, symbol.column
+            ));
+        }
+        for edge in &graph.defines {
+            result.push_str(&format!(
+                "D:{}:{}\n",
+                graph.files[edge.file].path, graph.symbols[edge.symbol].canonical
+            ));
+        }
+        for edge in &graph.imports {
+            result.push_str(&format!(
+                "I:{}:{}\n",
+                graph.files[edge.from].path, graph.files[edge.to].path
+            ));
+        }
+        for edge in &graph.calls {
+            result.push_str(&format!(
+                "C:{}:{}\n",
+                graph.symbols[edge.from].canonical, graph.symbols[edge.to].canonical
+            ));
+        }
+        for issue in &graph.issues {
+            result.push_str(&format!(
+                "X:{:?}:{}:{}:{}:{}:{}\n",
+                issue.status, issue.source, issue.line, issue.column, issue.name, issue.detail
+            ));
+        }
+        for (id, symbol) in graph.symbols.iter().enumerate() {
+            let callers: Vec<_> = graph
+                .callers(id)
+                .iter()
+                .map(|id| graph.symbols[*id].canonical.as_str())
+                .collect();
+            let callees: Vec<_> = graph
+                .callees(id)
+                .iter()
+                .map(|id| graph.symbols[*id].canonical.as_str())
+                .collect();
+            result.push_str(&format!("A:{}:{callers:?}:{callees:?}\n", symbol.canonical));
+        }
+        result
+    }
+
+    fn assert_equivalent(incremental: &Index, full: &Index) {
+        assert_eq!(meaning(incremental.graph()), meaning(full.graph()));
+        for target in ["save", "use", "entry", "leaf", "a", "b", "src/api.ts::save"] {
+            assert_eq!(
+                query::find(incremental.graph(), target),
+                query::find(full.graph(), target)
+            );
+            assert_eq!(
+                query::inspect(incremental.graph(), target),
+                query::inspect(full.graph(), target)
+            );
+            assert_eq!(
+                query::impact(incremental.graph(), target),
+                query::impact(full.graph(), target)
+            );
+        }
+        for (from, to) in [
+            ("src/use.ts::use", "src/api.ts::save"),
+            ("src/cycle.ts::a", "src/cycle.ts::b"),
+        ] {
+            assert_eq!(
+                query::trace(incremental.graph(), from, to),
+                query::trace(full.graph(), from, to)
+            );
+        }
+    }
+
+    fn refresh(repo: &Repo, file: &str, source: &str) -> Index {
+        let mut index = Index::build(&repo.0).unwrap();
+        repo.write(file, source);
+        assert_eq!(
+            index.refresh(Path::new(file)).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        index
+    }
+
+    #[test]
+    fn body_edits_and_direct_call_addition_and_removal_match_full_build() {
+        let repo = repo();
+        let mut index = refresh(
+            &repo,
+            "src/local.ts",
+            "export function leaf() { return; }\nexport function entry() { leaf(); }\n",
+        );
+        assert!(
+            query::inspect(index.graph(), "src/local.ts::entry")
+                .unwrap()
+                .contains("src/local.ts::leaf")
+        );
+        repo.write(
+            "src/local.ts",
+            "export function leaf() { return; }\nexport function extra() {}\nexport function entry() { leaf(); extra(); }\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("src/local.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            query::inspect(index.graph(), "src/local.ts::entry")
+                .unwrap()
+                .contains("src/local.ts::extra")
+        );
+        repo.write(
+            "src/local.ts",
+            "export function leaf() { return; }\nexport function extra() {}\nexport function entry() { extra(); }\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("src/local.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            !query::inspect(index.graph(), "src/local.ts::entry")
+                .unwrap()
+                .contains("src/local.ts::leaf")
+        );
+    }
+
+    #[test]
+    fn rename_export_and_import_binding_changes_re_resolve_importers() {
+        let repo = repo();
+        let mut index = refresh(
+            &repo,
+            "src/api.ts",
+            "export function renamed() {}\nexport function other() {}\n",
+        );
+        let missing = query::inspect(index.graph(), "src/use.ts::use").unwrap();
+        assert!(missing.contains("Direct callees: none"));
+        assert!(missing.contains("imported binding is not uniquely resolved"));
+        repo.write(
+            "src/use.ts",
+            "import { other as save } from './api';\nexport function use() { save(); }\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("src/use.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            query::inspect(index.graph(), "src/use.ts::use")
+                .unwrap()
+                .contains("src/api.ts::other")
+        );
+    }
+
+    #[test]
+    fn ambiguity_and_unresolved_calls_appear_and_disappear() {
+        let repo = repo();
+        let mut index = refresh(
+            &repo,
+            "src/local.ts",
+            "export function leaf() {}\nexport function entry() { missing(); }\n",
+        );
+        assert!(
+            query::inspect(index.graph(), "src/local.ts::entry")
+                .unwrap()
+                .contains("no matching local function")
+        );
+        repo.write(
+            "src/local.ts",
+            "export function leaf() {}\nexport function missing() {}\nexport function entry() { missing(); }\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("src/local.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        repo.write(
+            "src/api.ts",
+            "export function save() {}\nexport function save() {}\nexport function other() {}\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("src/api.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            query::inspect(index.graph(), "src/use.ts::use")
+                .unwrap()
+                .contains("AMBIGUOUS")
+        );
+        repo.write(
+            "src/api.ts",
+            "export function save() {}\nexport function other() {}\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("src/api.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            !query::inspect(index.graph(), "src/use.ts::use")
+                .unwrap()
+                .contains("AMBIGUOUS")
+        );
+    }
+
+    #[test]
+    fn cycles_and_output_remain_deterministic_after_refresh() {
+        let repo = repo();
+        let index = refresh(
+            &repo,
+            "src/cycle.ts",
+            "export function a() { b(); }\nexport function b() { a(); }\n",
+        );
+        let first = query::impact(index.graph(), "src/cycle.ts::a").unwrap();
+        assert_eq!(
+            first,
+            query::impact(index.graph(), "src/cycle.ts::a").unwrap()
+        );
+        assert!(first.contains("Total confirmed affected symbols: 1"));
+    }
+
+    #[test]
+    fn added_deleted_and_renamed_files_fall_back_to_full_rebuild() {
+        let repo = repo();
+        let mut index = Index::build(&repo.0).unwrap();
+        repo.write("src/new.ts", "export function fresh() {}\n");
+        assert_eq!(
+            index.refresh(Path::new("src/new.ts")).unwrap(),
+            RefreshKind::FullRebuild
+        );
+        repo.write("src/new.ts", "");
+        assert_eq!(
+            index.refresh(Path::new("src/new.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        fs::remove_file(repo.0.join("src/new.ts")).unwrap();
+        assert_eq!(
+            index.refresh(Path::new("src/new.ts")).unwrap(),
+            RefreshKind::FullRebuild
+        );
+        fs::rename(repo.0.join("src/local.ts"), repo.0.join("src/renamed.ts")).unwrap();
+        assert_eq!(
+            index.refresh(Path::new("src/local.ts")).unwrap(),
+            RefreshKind::FullRebuild
+        );
+        assert!(query::find(index.graph(), "entry").contains("src/renamed.ts::entry"));
+    }
+
+    fn benchmark_root(label: &str, source_root: &Path) {
+        let repo = Repo::new(&[]);
+        for source in super::source_files(source_root).unwrap() {
+            let relative = super::relative_path(source_root, &source).unwrap();
+            let destination = repo.0.join(&relative);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::copy(source, destination).unwrap();
+        }
+        let start = std::time::Instant::now();
+        let mut index = Index::build(&repo.0).unwrap();
+        let full = start.elapsed();
+        let changed = index.parsed.keys().next().unwrap().clone();
+        let path = repo.0.join(&changed);
+        let mut source = fs::read_to_string(&path).unwrap();
+        source.push('\n');
+        fs::write(&path, source).unwrap();
+        let start = std::time::Instant::now();
+        assert_eq!(
+            index.refresh(Path::new(&changed)).unwrap(),
+            RefreshKind::Incremental
+        );
+        let refresh = start.elapsed();
+        println!(
+            "{label}: files={} symbols={} imports={} calls={} issues={} full_us={} refresh_us={} changed={changed}",
+            index.graph().files.len(),
+            index.graph().symbols.len(),
+            index.graph().imports.len(),
+            index.graph().calls.len(),
+            index.graph().issues.len(),
+            full.as_micros(),
+            refresh.as_micros(),
+        );
+    }
+
+    #[test]
+    #[ignore = "manual release benchmark"]
+    fn release_build_and_refresh_benchmarks() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        benchmark_root("basic", &root.join("tests/fixtures/basic"));
+        benchmark_root("gitnexus", &root.join("misc/references/gitnexus"));
     }
 }

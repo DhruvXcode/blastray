@@ -1,0 +1,44 @@
+# Mission 2 studies
+
+## GitNexus (commit `932d937085e14664f4ef97b06506bf01034497ab`)
+
+- Finding: file content hashes classify unchanged, changed, added, and deleted
+  files deterministically; incremental work starts from that diff.
+  Why it matters: BlastRay's eventual persisted index should make content and
+  file-set changes explicit. Mission 2 receives an explicit changed path, so it
+  keeps the same conservative distinction through full-rebuild fallbacks.
+  Reference: `gitnexus/src/storage/file-hash.ts`,
+  `gitnexus/test/unit/incremental-file-hash.test.ts`.
+
+- Finding: cached parse artifacts avoid reparsing unchanged files, but cache
+  schema/version changes must invalidate safely.
+  Why it matters: Mission 2 retains `ParsedFile` artifacts in memory and keeps
+  persistence/versioning out of scope until it can be designed deliberately.
+  Reference: `gitnexus/src/storage/parse-cache.ts`,
+  `gitnexus/src/core/ingestion/pipeline-phases/parse-impl.ts`.
+
+- Finding: an import reverse graph gives a bounded importer closure; the
+  orchestration tests treat interrupted/uncertain incremental state as a full
+  rebuild case.
+  Why it matters: BlastRay re-resolves the edited file and its direct resolved
+  importers only, and chooses a full rebuild for additions, deletions, renames,
+  unsupported paths, or any path it did not previously index.
+  Reference: `gitnexus/test/unit/incremental-orchestration.test.ts`,
+  `gitnexus/src/core/ingestion/utils/graph-sort.ts`.
+
+- Finding: warm parse caching alone can fail to improve latency when a later
+  scope-resolution phase still re-extracts or performs workspace-wide derived
+  work; the project documents and profiles those phases separately.
+  Why it matters: BlastRay keeps its supported resolution subset narrow and
+  separates retained parse artifacts, per-file resolution facts, and cheap
+  rebuilt query adjacency. It must measure refresh separately from full build.
+  Reference: `gitnexus/src/core/ingestion/pipeline-phases/parse-impl.ts`,
+  `gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts`.
+
+- Finding: GitNexus persists generated state under `.gitnexus/` and has broad
+  MCP/editor integrations, which add lifecycle and startup complexity.
+  Why it matters: BlastRay should not add state or integrations in Mission 2;
+  any future state stays reconstructible under `.blastray/` and the public
+  intelligence vocabulary stays small.
+  Reference: `gitnexus/src/storage/repo-manager.ts`, `.mcp.json`,
+  `gitnexus-claude-plugin/`.

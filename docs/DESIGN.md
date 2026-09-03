@@ -28,8 +28,22 @@ source -> parse -> resolve -> graph -> query -> CLI/MCP
 
 Each stage must earn its complexity through a current user-facing need.
 
+BlastRay is a sugar layer: it should improve an existing repository without
+making that repository feel like a BlastRay project. Future generated state is
+reconstructible under `.blastray/`; BlastRay must not silently edit tracked
+`.gitignore` or agent instruction files.
+
 ## Mission 1 boundary
 
 Mission 1 builds the graph in memory on each CLI invocation. Only confirmed
 relationships become edges. Unresolved and ambiguous imports or calls are kept
 as explicit diagnostics and never participate in `trace` or `impact`.
+
+## Mission 2 boundary
+
+`Index::build` retains parsed artifacts in memory. `Index::refresh` reparses a
+modified existing supported file, re-resolves it and its direct resolved
+importers, then deterministically rebuilds the lightweight graph views and
+adjacency. Added, deleted, renamed, unsupported, or otherwise uncertain paths
+fall back to a full rebuild. There is no persistence, watcher, daemon, or new
+public command.
