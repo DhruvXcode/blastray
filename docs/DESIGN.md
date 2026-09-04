@@ -117,3 +117,9 @@ unique indexed local or direct relative import, and the Class has exactly one
 non-static indexed method with that name. Reassignment, shadowing, computed or
 inline receivers, conditional initializers, inheritance, and all other object
 flows remain unresolved.
+
+## Mission 12 boundary
+
+An empty supported-source set is not treated as meaningful structural evidence.
+CLI and MCP queries state the current `.ts`, `.tsx`, `.js`, and `.jsx` language
+boundary; a mixed repository still indexes its supported files normally.

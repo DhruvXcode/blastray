@@ -33,20 +33,33 @@ fn run(args: Vec<String>) -> Result<String, String> {
         [command] if command == "--version" || command == "-V" => {
             Ok(format!("blastray {}", env!("CARGO_PKG_VERSION")))
         }
-        [command, target] if command == "find" => Ok(query::find(open_index()?.graph(), target)),
-        [command, target] if command == "inspect" => query::inspect(open_index()?.graph(), target),
-        [command, from, to] if command == "trace" => query::trace(open_index()?.graph(), from, to),
-        [command, flag] if command == "impact" && flag == "--diff" => {
-            let index = open_index()?;
-            diff::impact(index.graph(), Path::new("."))
+        [command, target] if command == "find" => {
+            answer_with_index(|index| Ok(query::find(index.graph(), target)))
         }
-        [command, target] if command == "impact" => query::impact(open_index()?.graph(), target),
+        [command, target] if command == "inspect" => {
+            answer_with_index(|index| query::inspect(index.graph(), target))
+        }
+        [command, from, to] if command == "trace" => {
+            answer_with_index(|index| query::trace(index.graph(), from, to))
+        }
+        [command, flag] if command == "impact" && flag == "--diff" => {
+            answer_with_index(|index| diff::impact(index.graph(), Path::new(".")))
+        }
+        [command, target] if command == "impact" => {
+            answer_with_index(|index| query::impact(index.graph(), target))
+        }
         _ => Err(help()),
     }
 }
 
-fn open_index() -> Result<index::Index, String> {
-    index::Index::open(Path::new("."))
+fn answer_with_index(
+    query_fn: impl FnOnce(&index::Index) -> Result<String, String>,
+) -> Result<String, String> {
+    let index = index::Index::open(Path::new("."))?;
+    if !index.has_supported_source_files() {
+        return Ok(index::NO_SUPPORTED_SOURCE_FILES.to_string());
+    }
+    query_fn(&index)
 }
 
 fn help() -> String {

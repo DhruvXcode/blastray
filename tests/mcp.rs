@@ -16,6 +16,18 @@ struct Repo(PathBuf);
 
 impl Repo {
     fn new() -> Self {
+        let repo = Self::empty();
+        repo.write("src/a.ts", "export function leaf() {}\n");
+        repo.write(
+            "src/b.ts",
+            "import { leaf } from './a';\nexport function entry() { leaf(); }\n",
+        );
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-qm", "initial"]);
+        repo
+    }
+
+    fn empty() -> Self {
         let path = std::env::temp_dir().join(format!(
             "blastray-mcp-test-{}-{}",
             std::process::id(),
@@ -23,16 +35,9 @@ impl Repo {
         ));
         fs::create_dir_all(&path).unwrap();
         let repo = Self(path);
-        repo.write("src/a.ts", "export function leaf() {}\n");
-        repo.write(
-            "src/b.ts",
-            "import { leaf } from './a';\nexport function entry() { leaf(); }\n",
-        );
         repo.git(&["init", "-q"]);
         repo.git(&["config", "user.name", "BlastRay test"]);
         repo.git(&["config", "user.email", "test@example.invalid"]);
-        repo.git(&["add", "."]);
-        repo.git(&["commit", "-qm", "initial"]);
         repo
     }
 
@@ -177,6 +182,29 @@ fn meaning(graph: &Graph) -> String {
         ));
     }
     result
+}
+
+#[test]
+fn stdio_server_explains_unsupported_repositories() {
+    let repo = Repo::empty();
+    repo.write("lib/main.dart", "void main() {}\n");
+    let mut mcp = Mcp::start(&repo);
+
+    let unsupported = text(&mcp.call("find", json!({"query": "main"}))).to_string();
+    assert_eq!(
+        unsupported,
+        "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, and .jsx."
+    );
+    assert_eq!(
+        text(&mcp.call("impact", json!({"target": "anything"}))),
+        unsupported.as_str()
+    );
+
+    repo.write("src/main.ts", "export function supported() {}\n");
+    let mixed_response = mcp.call("find", json!({"query": "supported"}));
+    let mixed = text(&mixed_response);
+    assert!(mixed.contains("src/main.ts::supported"));
+    assert!(!mixed.contains("No supported source files"));
 }
 
 #[test]

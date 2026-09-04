@@ -5,7 +5,7 @@
 BlastRay is a tiny native code-intelligence engine that lets coding agents see
 how code connects and what a change can break.
 
-It will provide four primitives:
+It provides four primitives:
 
 - `find` — locate a symbol or code concept
 - `inspect` — show the structural neighborhood around a target
@@ -28,6 +28,8 @@ original canonical identity. Explicit local export lists can also forward one
 uniquely resolved direct relative callable import without changing that identity.
 An immutable local `const x = new Class()` can call a uniquely resolved
 non-static method on that indexed local or relative-imported Class.
+Repositories with no supported source files receive an explicit language-limit
+message rather than an empty-graph result.
 
 The same four primitives are available to MCP-capable coding agents through
 the stdio server: `blastray mcp`.

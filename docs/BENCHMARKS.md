@@ -420,3 +420,67 @@ Examples include `startWatchFileLoop` creating `WatchRefreshQueue` before
 calling `runInitial`, `evalServerCommand` creating `LocalBackend` before
 `init`, and `wikiCommandImpl` creating `WikiGenerator` before `run`. These are
 single-run environment measurements, not public performance claims.
+
+## Mission 12 multi-repository pre-beta audit
+
+Release-mode first and second `blastray find audit` queries were run in
+disposable shallow clones. The first query creates `.blastray/index.bin`; the
+second validates hashes and loads the warm state. Source trees honor their own
+Git ignore rules and no dependency installation or generated vendor tree was
+included. Wall time is Bash's `time`; `/usr/bin/time` was unavailable here.
+
+```text
+git clone --depth 1 https://github.com/expressjs/morgan.git audit-repo
+cd audit-repo
+TIMEFORMAT='cold=%3R'; time /workspaces/blastray/target/release/blastray find audit
+TIMEFORMAT='warm=%3R'; time /workspaces/blastray/target/release/blastray find audit
+wc -c < .blastray/index.bin
+```
+
+| repository | pinned commit | supported files | symbols (function/class/method) | imports | calls | unresolved | ambiguous | unresolved/symbol | cache bytes | cold | warm |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| [GitNexus](https://github.com/abhigyanpatwari/GitNexus) | `932d937085e14664f4ef97b06506bf01034497ab` | 2,430 | 9,376 (7,525/307/1,544) | 5,914 | 10,009 | 47,427 | 1 | 5.06 | 17,353,479 | 4.354 s | 0.300 s |
+| [morgan](https://github.com/expressjs/morgan) | `286b000228cacba362bfa89791c6268663f86610` | 3 | 25 (25/0/0) | 0 | 7 | 43 | 0 | 1.72 | 13,504 | 0.020 s | 0.003 s |
+| [p-queue](https://github.com/sindresorhus/p-queue) | `180ab9e25cd10b6f548767d7176076b50d25e188` | 14 | 59 (6/2/51) | 17 | 3 | 174 | 0 | 2.95 | 45,717 | 0.038 s | 0.003 s |
+| [zustand](https://github.com/pmndrs/zustand) | `b57db4f86ef179285da216eeb291266da82c361c` | 48 | 59 (59/0/0) | 33 | 9 | 416 | 0 | 7.05 | 104,282 | 0.062 s | 0.006 s |
+| [changesets](https://github.com/changesets/changesets) | `d7e4a2d7e60f963d858ac31068fe8cddecc6ca2d` | 163 | 334 (305/8/21) | 210 | 229 | 2,747 | 0 | 8.22 | 768,009 | 0.166 s | 0.015 s |
+
+Top unresolved categories, by exact diagnostic detail, show the same honest
+coverage boundary across unrelated codebases: receiver/dynamic syntax is the
+largest category except where non-relative imports dominate.
+
+| repository | top unresolved categories (count) |
+| --- | --- |
+| GitNexus | receiver/dynamic (26,498); imported binding waits for module (6,739); non-relative imports (3,758); type-only imports (2,815); export not uniquely callable (2,494) |
+| morgan | receiver/dynamic (28); no matching local/imported function (13); possible local shadowing (2) |
+| p-queue | receiver/dynamic (76); imported binding waits for module (35); non-relative imports (33); no same-class method (12); export not uniquely callable (10) |
+| zustand | imported binding waits for module (173); non-relative imports (95); receiver/dynamic (59); type-only imports (40); imported binding not uniquely resolved (24) |
+| changesets | receiver/dynamic (1,085); imported binding waits for module (632); non-relative imports (510); imported binding not uniquely resolved (175); type-only imports (170) |
+
+The audit source-checked the first five deterministic CALLS edges from each
+repository where available (three for p-queue): all 23 call sites and canonical
+targets were verified against source; incorrect 0, uncertain 0. This is a
+small correctness sample, not a coverage claim.
+
+Three disposable working-tree edits also exercised `impact --diff`: morgan
+`index.js::clfdate` and zustand `src/vanilla/shallow.ts::shallow` mapped
+correctly with zero confirmed downstream callers; p-queue
+`source/lower-bound.ts::lowerBound` mapped correctly with confirmed callers
+`PriorityQueue.enqueue` then `PriorityQueue.setPriority`. All three results
+remained explicitly conservative/incomplete because the changed files contain
+unresolved calls.
+
+Live stdio MCP protocol passes used one process per repository and the existing
+four tools. One lexical find located a useful target in p-queue (`priority
+queue`, 10 results), zustand (`shallow`, 6), and changesets (`release plan`,
+capped at 20 of 55). `inspect`, `trace`, and `impact` then produced useful
+confirmed neighborhoods and paths for `PriorityQueue.enqueue -> lowerBound`,
+`shallow -> compareEntries`, and `applyReleasePlan -> getNewChangelogEntry`.
+No protocol stdout noise appeared; unresolved receiver/package edges remain the
+visible limit.
+
+The requested private Kael Chess clone was inaccessible (HTTP 403), so the
+public Dart repository [dart-lang/language](https://github.com/dart-lang/language)
+at `91fa646beb384eaa41257f52e3b4ac9434504578` was used as the
+unsupported-language control. It receives: `No supported source files found.
+BlastRay currently indexes .ts, .tsx, .js, and .jsx.`

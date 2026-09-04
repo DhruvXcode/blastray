@@ -25,6 +25,9 @@ const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
 const CACHE_SCHEMA: u32 = 7;
 
+pub const NO_SUPPORTED_SOURCE_FILES: &str =
+    "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, and .jsx.";
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SymbolKind {
     Function,
@@ -266,6 +269,10 @@ impl Index {
 
     pub fn graph(&self) -> &Graph {
         &self.graph
+    }
+
+    pub fn has_supported_source_files(&self) -> bool {
+        !self.graph.files.is_empty()
     }
 
     pub fn refresh(&mut self, modified_path: &Path) -> Result<RefreshKind, String> {

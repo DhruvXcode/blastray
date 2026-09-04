@@ -13,13 +13,17 @@ fn run(args: &[&str]) -> std::process::Output {
         NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
     ));
     copy_tree(&source, &fixture);
-    let output = Command::new(env!("CARGO_BIN_EXE_blastray"))
-        .args(args)
-        .current_dir(&fixture)
-        .output()
-        .unwrap();
+    let output = run_in(&fixture, args);
     fs::remove_dir_all(fixture).unwrap();
     output
+}
+
+fn run_in(directory: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_blastray"))
+        .args(args)
+        .current_dir(directory)
+        .output()
+        .unwrap()
 }
 
 fn copy_tree(source: &Path, destination: &Path) {
@@ -54,6 +58,44 @@ fn help_is_available() {
 
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("blastray find"));
+}
+
+#[test]
+fn unsupported_repositories_explain_the_language_boundary() {
+    let repository = std::env::temp_dir().join(format!(
+        "blastray-cli-unsupported-test-{}-{}",
+        std::process::id(),
+        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&repository).unwrap();
+
+    let empty = run_in(&repository, &["find", "anything"]);
+    assert!(empty.status.success());
+    assert_eq!(
+        String::from_utf8(empty.stdout).unwrap(),
+        "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, and .jsx.\n"
+    );
+
+    fs::write(repository.join("main.dart"), "void main() {}\n").unwrap();
+    let dart_only = run_in(&repository, &["inspect", "anything"]);
+    assert!(dart_only.status.success());
+    assert!(
+        String::from_utf8(dart_only.stdout)
+            .unwrap()
+            .starts_with("No supported source files found.")
+    );
+
+    fs::write(
+        repository.join("main.ts"),
+        "export function supported() {}\n",
+    )
+    .unwrap();
+    let mixed = run_in(&repository, &["find", "supported"]);
+    assert!(mixed.status.success());
+    let mixed = String::from_utf8(mixed.stdout).unwrap();
+    assert!(mixed.contains("main.ts::supported"));
+    assert!(!mixed.contains("No supported source files"));
+    fs::remove_dir_all(repository).unwrap();
 }
 
 #[test]

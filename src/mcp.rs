@@ -7,7 +7,11 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ServiceExt, tool, tool_router};
 use serde::Deserialize;
 
-use crate::{diff, index::Index, query};
+use crate::{
+    diff,
+    index::{Index, NO_SUPPORTED_SOURCE_FILES},
+    query,
+};
 
 pub fn run() -> Result<(), String> {
     let root = std::env::current_dir()
@@ -52,6 +56,9 @@ impl Server {
         };
         if let Err(message) = index.sync() {
             return error(&message);
+        }
+        if !index.has_supported_source_files() {
+            return text(NO_SUPPORTED_SOURCE_FILES.to_string());
         }
         match query_fn(&index) {
             Ok(output) => text(output),
