@@ -117,3 +117,15 @@
 - Finding: 287 of 374 named re-export bindings forwarded a unique direct callable; only three needed chains and wildcards had no observed direct call-site value.
   Why it matters: one-hop named forwarding is high-confidence and keeps canonical identity intact; export closure would add complexity without measured need.
   Reference: Mission 9 census; `src/core/auto-sync/index.ts`, `src/core/ingestion/pipeline-phases/index.ts` in GitNexus `932d937`.
+
+## Mission 10 decision
+
+- Finding: a local `export { name }` can forward a previously imported direct
+  relative binding, a common compatibility barrel pattern; 135 such bindings
+  accounted for 21 of the 41 observed callable-absent direct call sites.
+  Why it matters: resolving the one direct import/export hop restores canonical
+  CALLS targets without object inference or a general export closure. CommonJS,
+  values, constructors, and parser-limited patterns dominated the remaining
+  misses and were not safe to generalize.
+  Reference: Mission 10 census; `src/storage/repo-manager.ts`,
+  `src/storage/repo-meta.ts` in GitNexus `932d937`.

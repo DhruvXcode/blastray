@@ -7,7 +7,8 @@ use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 
 use crate::parse::{
-    ImportBinding, ImportDraft, ParsedFile, ReexportDraft, SymbolDraft, parse_file,
+    ImportBinding, ImportDraft, LocalExportDraft, ParsedFile, ReexportDraft, SymbolDraft,
+    parse_file,
 };
 
 const EXTENSIONS: [&str; 4] = ["ts", "tsx", "js", "jsx"];
@@ -22,7 +23,7 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 5;
+const CACHE_SCHEMA: u32 = 6;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SymbolKind {
@@ -603,6 +604,11 @@ impl ResolveContext {
         }
         let direct_exports = context.exports.clone();
         for file in parsed.values() {
+            for local_export in &file.local_exports {
+                resolve_local_export(file, local_export, &direct_exports, &mut context);
+            }
+        }
+        for file in parsed.values() {
             for reexport in &file.reexports {
                 if reexport.type_only {
                     continue;
@@ -636,6 +642,72 @@ impl ResolveContext {
             }
         }
         context
+    }
+}
+
+fn resolve_local_export(
+    file: &ParsedFile,
+    local_export: &LocalExportDraft,
+    direct_exports: &BTreeMap<(String, String, bool), Vec<String>>,
+    context: &mut ResolveContext,
+) {
+    if local_export.type_only {
+        return;
+    }
+    let mut candidates = context
+        .local_functions
+        .get(&(file.path.clone(), local_export.local.clone()))
+        .cloned()
+        .unwrap_or_default();
+    for import in &file.imports {
+        if import.type_only {
+            continue;
+        }
+        for binding in &import.bindings {
+            if binding.local() != local_export.local {
+                continue;
+            }
+            let source_candidates = module_candidates(&file.path, &import.module, &context.files);
+            if source_candidates.len() > 1 {
+                context.ambiguous_exports.insert((
+                    file.path.clone(),
+                    local_export.exported.clone(),
+                    false,
+                ));
+                continue;
+            }
+            let [source] = source_candidates.as_slice() else {
+                continue;
+            };
+            let source_key = match binding {
+                ImportBinding::Named { imported, .. } => (source.clone(), imported.clone(), false),
+                ImportBinding::Default { .. } => (source.clone(), String::new(), true),
+            };
+            if context.ambiguous_exports.contains(&source_key) {
+                context.ambiguous_exports.insert((
+                    file.path.clone(),
+                    local_export.exported.clone(),
+                    false,
+                ));
+            } else if let Some(symbols) = direct_exports.get(&source_key) {
+                candidates.extend(symbols.clone());
+            }
+        }
+    }
+    match candidates.as_slice() {
+        [symbol] => context
+            .exports
+            .entry((file.path.clone(), local_export.exported.clone(), false))
+            .or_default()
+            .push(symbol.clone()),
+        [] => {}
+        _ => {
+            context.ambiguous_exports.insert((
+                file.path.clone(),
+                local_export.exported.clone(),
+                false,
+            ));
+        }
     }
 }
 
@@ -1927,6 +1999,141 @@ mod tests {
             (
                 "src/use.ts",
                 "import { leaf } from './barrel.js';\nexport function entry() { leaf(); }\n",
+            ),
+        ]);
+        let mut index = Index::build(&repo.0).unwrap();
+        repo.write("src/leaf.ts", "export function renamed() {}\n");
+        assert_eq!(
+            index.refresh(Path::new("src/leaf.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            query::inspect(index.graph(), "src/use.ts::entry")
+                .unwrap()
+                .contains("Direct callees: none")
+        );
+        let persistent = Index::open(&repo.0).unwrap();
+        assert_equivalent(&persistent, &full);
+    }
+
+    #[test]
+    fn local_export_lists_forward_callables_without_changing_canonical_identity() {
+        let repo = Repo::new(&[
+            (
+                "src/leaf.ts",
+                "export function leaf() {}\nexport const value = 1;\n",
+            ),
+            (
+                "src/barrel.ts",
+                "import { leaf as localLeaf, value } from './leaf.js';\nexport { localLeaf as publicLeaf, value };\n",
+            ),
+            (
+                "src/use.ts",
+                "import { publicLeaf, value } from './barrel.js';\nexport function entry() { publicLeaf(); publicLeaf(); value(); }\n",
+            ),
+        ]);
+        let index = Index::build(&repo.0).unwrap();
+        let graph = index.graph();
+        let entry = graph.symbol_candidates("src/use.ts::entry")[0];
+        let leaf = graph.symbol_candidates("src/leaf.ts::leaf")[0];
+        assert_eq!(graph.calls.len(), 1);
+        assert_eq!(graph.call_sites(entry, leaf).len(), 2);
+        assert!(
+            query::trace(graph, "entry", "src/leaf.ts::leaf")
+                .unwrap()
+                .contains("Known CALLS path")
+        );
+        let output = query::inspect(graph, "src/use.ts::entry").unwrap();
+        assert!(output.contains("src/leaf.ts::leaf"));
+        assert!(output.contains("imported binding is not uniquely resolved"));
+    }
+
+    #[test]
+    fn local_callable_export_lists_and_failures_remain_conservative() {
+        let direct = Repo::new(&[
+            ("src/api.ts", "const leaf = () => {};\nexport { leaf };\n"),
+            (
+                "src/use.ts",
+                "import { leaf } from './api.js';\nexport function entry() { leaf(); }\n",
+            ),
+        ]);
+        assert!(
+            query::trace(
+                Index::build(&direct.0).unwrap().graph(),
+                "src/use.ts::entry",
+                "src/api.ts::leaf"
+            )
+            .unwrap()
+            .contains("Known CALLS path")
+        );
+
+        let local = Repo::new(&[
+            (
+                "src/api.ts",
+                "const hidden = () => {};\nexport { hidden as publicLeaf };\n",
+            ),
+            (
+                "src/use.ts",
+                "import { publicLeaf } from './api.js';\nexport function entry() { const publicLeaf = () => {}; publicLeaf(); }\n",
+            ),
+        ]);
+        let output =
+            query::inspect(Index::build(&local.0).unwrap().graph(), "src/use.ts::entry").unwrap();
+        assert!(output.contains("unmodeled local binding could shadow this name"));
+        assert!(!output.contains("src/api.ts::hidden"));
+
+        let missing = Repo::new(&[
+            (
+                "src/api.ts",
+                "export { missing };\nexport type { TypeOnly };\n",
+            ),
+            (
+                "src/use.ts",
+                "import { missing, TypeOnly } from './api.js';\nexport function entry() { missing(); TypeOnly(); }\n",
+            ),
+        ]);
+        let output = query::inspect(
+            Index::build(&missing.0).unwrap().graph(),
+            "src/use.ts::entry",
+        )
+        .unwrap();
+        assert!(output.contains("imported binding is not uniquely resolved"));
+
+        let ambiguous = Repo::new(&[
+            (
+                "src/leaf.ts",
+                "export function leaf() {}\nexport function leaf() {}\n",
+            ),
+            (
+                "src/barrel.ts",
+                "import { leaf } from './leaf.js';\nexport { leaf as publicLeaf };\n",
+            ),
+            (
+                "src/use.ts",
+                "import { publicLeaf } from './barrel.js';\nexport function entry() { publicLeaf(); }\n",
+            ),
+        ]);
+        let output = query::inspect(
+            Index::build(&ambiguous.0).unwrap().graph(),
+            "src/use.ts::entry",
+        )
+        .unwrap();
+        assert!(output.contains("AMBIGUOUS"));
+    }
+
+    #[test]
+    fn local_export_forwarding_refreshes_and_persists_like_a_full_build() {
+        let repo = Repo::new(&[
+            ("src/leaf.ts", "export function leaf() {}\n"),
+            (
+                "src/barrel.ts",
+                "import { leaf } from './leaf.js';\nexport { leaf as publicLeaf };\n",
+            ),
+            (
+                "src/use.ts",
+                "import { publicLeaf } from './barrel.js';\nexport function entry() { publicLeaf(); publicLeaf(); }\n",
             ),
         ]);
         let mut index = Index::build(&repo.0).unwrap();

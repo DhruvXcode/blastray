@@ -82,3 +82,12 @@ canonical Function symbol; it does not create a barrel symbol. The re-exporting
 file has an IMPORTS dependency on a uniquely resolved source module, and refresh
 re-resolves the reverse importer closure. Cache schema 5 invalidates prior
 parsed artifacts.
+
+## Mission 10 local export forwarding
+
+Parsed files retain non-type `export { local as publicName }` facts separately
+from canonical symbols. A local Function or a uniquely resolved direct relative
+import binding can expose that public name; the exported name maps to the
+underlying canonical Function rather than a synthetic barrel symbol. Missing,
+non-callable, type-only, ambiguous, indirect, and unresolved source bindings
+remain unresolved or ambiguous. Cache schema 6 invalidates prior parsed facts.

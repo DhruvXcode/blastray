@@ -195,6 +195,18 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
         "src/reexport-use.ts",
         "import { publicForwarded } from './reexport-barrel.js';\nexport function reexportEntry() { publicForwarded(); }\n",
     );
+    repo.write(
+        "src/local-export-source.ts",
+        "export function forwarded() {}\n",
+    );
+    repo.write(
+        "src/local-export-barrel.ts",
+        "import { forwarded as localForwarded } from './local-export-source.js';\nexport { localForwarded as publicForwarded };\n",
+    );
+    repo.write(
+        "src/local-export-use.ts",
+        "import { publicForwarded } from './local-export-barrel.js';\nexport function localExportEntry() { publicForwarded(); }\n",
+    );
     let mut mcp = Mcp::start(&repo);
 
     let list = mcp.request("tools/list", json!({}));
@@ -218,6 +230,16 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
         text(&mcp.call(
             "trace",
             json!({"from": "src/b.ts::entry", "to": "src/a.ts::leaf"})
+        ))
+        .contains("Known CALLS path")
+    );
+    assert!(
+        text(&mcp.call(
+            "trace",
+            json!({
+                "from": "src/local-export-use.ts::localExportEntry",
+                "to": "src/local-export-source.ts::forwarded"
+            })
         ))
         .contains("Known CALLS path")
     );
@@ -248,6 +270,18 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
         text(&mcp.call(
             "inspect",
             json!({"target": "src/reexport-use.ts::reexportEntry"})
+        ))
+        .contains("Direct callees: none")
+    );
+
+    repo.write(
+        "src/local-export-source.ts",
+        "export function renamedLocal() {}\n",
+    );
+    assert!(
+        text(&mcp.call(
+            "inspect",
+            json!({"target": "src/local-export-use.ts::localExportEntry"})
         ))
         .contains("Direct callees: none")
     );

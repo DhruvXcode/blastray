@@ -319,3 +319,57 @@ The selected forwarding facts changed from 374 unresolved named-re-export
 bindings to 287 proven forwardings, 0 new ambiguous forwardings, and 87
 unsupported/missing/indirect cases. They restored 30 confirmed CALLS edges.
 These are single-run environment measurements, not public performance claims.
+
+## Mission 10 callable-absent census and local export forwarding
+
+The Mission 9 `callable absent` count (2,031 bindings / 41 direct call sites)
+was a source-symbol-absence bucket. Mission 10 joined every current
+`the imported symbol was not uniquely exported by the resolved module`
+diagnostic to its import and target source, yielding 2,607 exact diagnostic
+instances. The broader exact join includes values, classes, parser-limited
+declarations, and export forms outside the older bucket; it was used so no
+direct call diagnostic was silently omitted.
+
+| exact target-module cause | bindings | direct call sites |
+| --- | ---: | ---: |
+| explicit local callable export | 2 | 2 |
+| unsupported declaration | 412 | 0 |
+| object literal | 24 | 0 |
+| class constructor-like import | 338 | 0 |
+| exported non-callable value | 1,133 | 12 |
+| CommonJS assignment | 184 | 6 |
+| unsupported re-export chain | 119 | 0 |
+| wildcard re-export | 28 | 0 |
+| local export without indexed local binding | 37 | 0 |
+| other/parser-limited shape | 195 | 2 |
+| local export forwarding an imported binding | 135 | 21 |
+
+Forwarding the last category was selected: it covers 21 of the 41 original
+call sites with direct relative imports and unique direct callable exports.
+The nearest alternatives either cover only two sites or require object-member,
+CommonJS, class-constructor, or wider export-closure semantics.
+
+Release-mode measurements used the existing `find analyze` disposable-copy
+procedure from Mission 9. The explicit importer-closure scan was also timed
+inside a release build; the first no-importer path was
+`bench/impact-pdg/fixtures/inter-dispatcher-thin/src/dispatcher.ts`.
+
+| metric | Mission 9 | Mission 10 |
+| --- | ---: | ---: |
+| source files | 2,430 | 2,430 |
+| symbols | 9,376 | 9,376 |
+| resolved IMPORTS | 5,914 | 5,914 |
+| resolved CALLS | 9,768 | 9,788 |
+| unresolved issues | 47,865 | 47,729 |
+| ambiguous issues | 1 | 1 |
+| cache size | 16,708,417 bytes | 16,889,808 bytes |
+| cold `find analyze` | 4.089 s | 3.960 s |
+| warm `find analyze` | 0.292 s | 0.290 s |
+
+All 135 selected binding diagnostics resolved; their 21 direct call sites
+restore 20 deduplicated CALLS edges (two sites share one source/target edge).
+The full reference build took 7.181 s in the release in-crate measurement.
+Reverse importer closure took 89 us for the no-importer path (size 1) and
+1,556 us for `src/storage/repo-meta.ts` (size 245), so Mission 10 leaves the
+simple scan unchanged. These are single-run environment measurements, not
+public performance claims.

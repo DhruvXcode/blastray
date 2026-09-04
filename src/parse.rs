@@ -10,6 +10,7 @@ pub(crate) struct ParsedFile {
     pub path: String,
     pub symbols: Vec<SymbolDraft>,
     pub imports: Vec<ImportDraft>,
+    pub local_exports: Vec<LocalExportDraft>,
     pub reexports: Vec<ReexportDraft>,
 }
 
@@ -58,6 +59,13 @@ pub(crate) struct ReexportDraft {
 }
 
 #[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct LocalExportDraft {
+    pub local: String,
+    pub exported: String,
+    pub type_only: bool,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct ReexportBinding {
     pub local: String,
     pub exported: String,
@@ -90,6 +98,7 @@ pub(crate) fn parse_file(path: &str, source: &str) -> Result<ParsedFile, String>
         path: path.to_string(),
         symbols: Vec::new(),
         imports: Vec::new(),
+        local_exports: Vec::new(),
         reexports: Vec::new(),
     };
     let mut cursor = tree.root_node().walk();
@@ -123,6 +132,8 @@ fn add_export(parsed: &mut ParsedFile, node: Node<'_>, source: &str) {
     let default_export = text.starts_with("export default");
     if let Some(reexport) = reexport_draft(node, source) {
         parsed.reexports.push(reexport);
+    } else if let Some(local_export) = local_export_draft(node, source) {
+        parsed.local_exports.extend(local_export);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -135,6 +146,38 @@ fn add_export(parsed: &mut ParsedFile, node: Node<'_>, source: &str) {
             _ => {}
         }
     }
+}
+
+fn local_export_draft(node: Node<'_>, source: &str) -> Option<Vec<LocalExportDraft>> {
+    if node.child_by_field_name("source").is_some() {
+        return None;
+    }
+    let export_text = text(node, source).trim_start();
+    let open = export_text.find('{')?;
+    let close = export_text[open + 1..].find('}')? + open + 1;
+    let mut bindings = Vec::new();
+    for specifier in export_text[open + 1..close].split(',') {
+        let words: Vec<_> = specifier.split_whitespace().collect();
+        let Some(local) = words.first() else {
+            continue;
+        };
+        if *local == "type" {
+            continue;
+        }
+        let exported = words
+            .windows(2)
+            .find(|pair| pair[0] == "as")
+            .map(|pair| pair[1])
+            .unwrap_or(local);
+        if is_identifier(local) && is_identifier(exported) {
+            bindings.push(LocalExportDraft {
+                local: (*local).to_string(),
+                exported: exported.to_string(),
+                type_only: export_text.starts_with("export type "),
+            });
+        }
+    }
+    (!bindings.is_empty()).then_some(bindings)
 }
 
 fn reexport_draft(node: Node<'_>, source: &str) -> Option<ReexportDraft> {

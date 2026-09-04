@@ -100,3 +100,11 @@ symbol. Wildcards, chains, default forwarding, type-only exports, missing
 exports, and ambiguous source modules remain unresolved or ambiguous. Refresh
 uses the reverse importer closure so edits to a re-export source re-resolve its
 barrel consumers.
+
+## Mission 10 boundary
+
+BlastRay also forwards a local explicit export list when its local identifier
+uniquely names a Function or a direct relative import that uniquely exposes a
+direct callable. The public module name never changes the underlying canonical
+symbol. This is not CommonJS support, object-member resolution, default-export
+inference, wildcard closure, or multi-hop export linking.
