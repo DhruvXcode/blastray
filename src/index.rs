@@ -6,7 +6,9 @@ use std::path::{Component, Path, PathBuf};
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 
-use crate::parse::{ImportBinding, ImportDraft, ParsedFile, SymbolDraft, parse_file};
+use crate::parse::{
+    ImportBinding, ImportDraft, ParsedFile, ReexportDraft, SymbolDraft, parse_file,
+};
 
 const EXTENSIONS: [&str; 4] = ["ts", "tsx", "js", "jsx"];
 const SKIP_DIRECTORIES: [&str; 7] = [
@@ -20,7 +22,7 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 4;
+const CACHE_SCHEMA: u32 = 5;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SymbolKind {
@@ -278,7 +280,7 @@ impl Index {
             return self.full_rebuild();
         }
 
-        let importers = self.direct_importers(&relative);
+        let importers = self.importer_closure(&relative);
         let source = std::fs::read_to_string(&source_path)
             .map_err(|error| format!("cannot read {relative}: {error}"))?;
         self.parsed
@@ -309,12 +311,19 @@ impl Index {
         normalize_relative(path)
     }
 
-    fn direct_importers(&self, target: &str) -> BTreeSet<String> {
-        self.resolved
-            .iter()
-            .filter(|(_, facts)| facts.imports.iter().any(|import| import == target))
-            .map(|(path, _)| path.clone())
-            .collect()
+    fn importer_closure(&self, target: &str) -> BTreeSet<String> {
+        let mut affected = BTreeSet::from([target.to_string()]);
+        loop {
+            let before = affected.len();
+            for (path, facts) in &self.resolved {
+                if facts.imports.iter().any(|import| affected.contains(import)) {
+                    affected.insert(path.clone());
+                }
+            }
+            if affected.len() == before {
+                return affected;
+            }
+        }
     }
 
     fn full_rebuild(&mut self) -> Result<RefreshKind, String> {
@@ -535,6 +544,7 @@ struct ResolveContext {
     local_functions: BTreeMap<(String, String), Vec<String>>,
     this_methods: BTreeMap<(String, String, String, bool), Vec<String>>,
     exports: BTreeMap<(String, String, bool), Vec<String>>,
+    ambiguous_exports: BTreeSet<(String, String, bool)>,
 }
 
 impl ResolveContext {
@@ -545,6 +555,7 @@ impl ResolveContext {
             local_functions: BTreeMap::new(),
             this_methods: BTreeMap::new(),
             exports: BTreeMap::new(),
+            ambiguous_exports: BTreeSet::new(),
         };
         for file in parsed.values() {
             for symbol in &file.symbols {
@@ -590,6 +601,40 @@ impl ResolveContext {
                 }
             }
         }
+        let direct_exports = context.exports.clone();
+        for file in parsed.values() {
+            for reexport in &file.reexports {
+                if reexport.type_only {
+                    continue;
+                }
+                let source_candidates =
+                    module_candidates(&file.path, &reexport.module, &context.files);
+                if source_candidates.len() > 1 {
+                    for binding in &reexport.bindings {
+                        context.ambiguous_exports.insert((
+                            file.path.clone(),
+                            binding.exported.clone(),
+                            false,
+                        ));
+                    }
+                    continue;
+                }
+                let [source] = source_candidates.as_slice() else {
+                    continue;
+                };
+                for binding in &reexport.bindings {
+                    if let Some(symbols) =
+                        direct_exports.get(&(source.clone(), binding.local.clone(), false))
+                    {
+                        context
+                            .exports
+                            .entry((file.path.clone(), binding.exported.clone(), false))
+                            .or_default()
+                            .extend(symbols.clone());
+                    }
+                }
+            }
+        }
         context
     }
 }
@@ -606,6 +651,9 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> FileResolution {
     let mut bindings = BTreeMap::new();
     for import in &file.imports {
         resolve_import(import, file, context, &mut bindings, &mut result);
+    }
+    for reexport in &file.reexports {
+        resolve_reexport_dependency(reexport, file, context, &mut result);
     }
     for draft in &file.symbols {
         if context
@@ -689,6 +737,20 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> FileResolution {
     result.calls.dedup();
     result.issues.sort_by(issue_order);
     result
+}
+
+fn resolve_reexport_dependency(
+    reexport: &ReexportDraft,
+    file: &ParsedFile,
+    context: &ResolveContext,
+    result: &mut FileResolution,
+) {
+    if reexport.type_only {
+        return;
+    }
+    if let [source] = module_candidates(&file.path, &reexport.module, &context.files).as_slice() {
+        result.imports.push(source.clone());
+    }
 }
 
 fn resolve_this_member_call(
@@ -810,15 +872,19 @@ fn resolve_import(
                 ImportBinding::Named { imported, .. } => (target.clone(), imported.clone(), false),
                 ImportBinding::Default { .. } => (target.clone(), String::new(), true),
             };
-            match context
-                .exports
-                .get(&export_key)
-                .map(Vec::as_slice)
-                .unwrap_or(&[])
-            {
-                [symbol] => BindingTarget::Resolved(symbol.clone()),
-                [] => BindingTarget::Unresolved,
-                _ => BindingTarget::Ambiguous,
+            if context.ambiguous_exports.contains(&export_key) {
+                BindingTarget::Ambiguous
+            } else {
+                match context
+                    .exports
+                    .get(&export_key)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                {
+                    [symbol] => BindingTarget::Resolved(symbol.clone()),
+                    [] => BindingTarget::Unresolved,
+                    _ => BindingTarget::Ambiguous,
+                }
             }
         } else if candidates.len() > 1 {
             BindingTarget::Ambiguous
@@ -1745,6 +1811,137 @@ mod tests {
         );
         let full = Index::build(&repo.0).unwrap();
         assert_equivalent(&index, &full);
+        let persistent = Index::open(&repo.0).unwrap();
+        assert_equivalent(&persistent, &full);
+    }
+
+    #[test]
+    fn one_hop_named_reexports_preserve_canonical_targets_and_evidence() {
+        let repo = Repo::new(&[
+            (
+                "src/leaf.ts",
+                "export function leaf() {}\nexport const value = 1;\n",
+            ),
+            (
+                "src/barrel.ts",
+                "export { leaf, leaf as publicLeaf, value } from './leaf.js';\n",
+            ),
+            (
+                "src/use.ts",
+                "import { publicLeaf } from './barrel.js';\nexport function entry() { publicLeaf(); publicLeaf(); }\n",
+            ),
+        ]);
+        let index = Index::build(&repo.0).unwrap();
+        let graph = index.graph();
+        let entry = graph.symbol_candidates("src/use.ts::entry")[0];
+        let leaf = graph.symbol_candidates("src/leaf.ts::leaf")[0];
+        assert_eq!(graph.calls.len(), 1);
+        assert_eq!(graph.call_sites(entry, leaf).len(), 2);
+        assert!(
+            query::trace(graph, "src/use.ts::entry", "src/leaf.ts::leaf")
+                .unwrap()
+                .contains("Known CALLS path")
+        );
+        assert!(
+            query::inspect(graph, "src/use.ts::entry")
+                .unwrap()
+                .contains("calls at src/use.ts:2:")
+        );
+        assert!(graph.imports.iter().any(|edge| {
+            graph.files[edge.from].path == "src/barrel.ts"
+                && graph.files[edge.to].path == "src/leaf.ts"
+        }));
+        assert!(
+            query::inspect(graph, "src/use.ts::entry")
+                .unwrap()
+                .contains("src/leaf.ts::leaf")
+        );
+    }
+
+    #[test]
+    fn named_reexports_remain_conservative_for_missing_values_types_and_ambiguous_modules() {
+        let missing = Repo::new(&[
+            (
+                "src/leaf.ts",
+                "export function leaf() {}\nexport const value = 1;\n",
+            ),
+            (
+                "src/barrel.ts",
+                "export { missing, value } from './leaf.js';\nexport type { leaf } from './leaf.js';\n",
+            ),
+            (
+                "src/use.ts",
+                "import { missing, value, leaf } from './barrel.js';\nexport function entry() { missing(); value(); leaf(); }\n",
+            ),
+        ]);
+        let output = query::inspect(
+            Index::build(&missing.0).unwrap().graph(),
+            "src/use.ts::entry",
+        )
+        .unwrap();
+        assert!(output.contains("imported binding is not uniquely resolved"));
+        assert!(!output.contains("src/leaf.ts::leaf"));
+
+        let ambiguous = Repo::new(&[
+            ("src/api.ts", "export function leaf() {}\n"),
+            ("src/api.tsx", "export function leaf() {}\n"),
+            ("src/barrel.ts", "export { leaf } from './api.js';\n"),
+            (
+                "src/use.ts",
+                "import { leaf } from './barrel.js';\nexport function entry() { leaf(); }\n",
+            ),
+        ]);
+        let output = query::inspect(
+            Index::build(&ambiguous.0).unwrap().graph(),
+            "src/use.ts::entry",
+        )
+        .unwrap();
+        assert!(output.contains("AMBIGUOUS"));
+        assert!(output.contains("imported binding is not uniquely resolved"));
+
+        let conflicting = Repo::new(&[
+            ("src/one.ts", "export function leaf() {}\n"),
+            ("src/two.ts", "export function leaf() {}\n"),
+            (
+                "src/barrel.ts",
+                "export { leaf as publicLeaf } from './one.js';\nexport { leaf as publicLeaf } from './two.js';\n",
+            ),
+            (
+                "src/use.ts",
+                "import { publicLeaf } from './barrel.js';\nexport function entry() { publicLeaf(); }\n",
+            ),
+        ]);
+        let output = query::inspect(
+            Index::build(&conflicting.0).unwrap().graph(),
+            "src/use.ts::entry",
+        )
+        .unwrap();
+        assert!(output.contains("AMBIGUOUS"));
+    }
+
+    #[test]
+    fn named_reexport_refresh_and_persistence_re_resolve_transitive_importers() {
+        let repo = Repo::new(&[
+            ("src/leaf.ts", "export function leaf() {}\n"),
+            ("src/barrel.ts", "export { leaf } from './leaf.js';\n"),
+            (
+                "src/use.ts",
+                "import { leaf } from './barrel.js';\nexport function entry() { leaf(); }\n",
+            ),
+        ]);
+        let mut index = Index::build(&repo.0).unwrap();
+        repo.write("src/leaf.ts", "export function renamed() {}\n");
+        assert_eq!(
+            index.refresh(Path::new("src/leaf.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            query::inspect(index.graph(), "src/use.ts::entry")
+                .unwrap()
+                .contains("Direct callees: none")
+        );
         let persistent = Index::open(&repo.0).unwrap();
         assert_equivalent(&persistent, &full);
     }

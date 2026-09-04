@@ -186,6 +186,15 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
         "src/worker.ts",
         "export class Worker { leaf() {} entry() { this.leaf(); } }\n",
     );
+    repo.write("src/reexport-source.ts", "export function forwarded() {}\n");
+    repo.write(
+        "src/reexport-barrel.ts",
+        "export { forwarded as publicForwarded } from './reexport-source.js';\n",
+    );
+    repo.write(
+        "src/reexport-use.ts",
+        "import { publicForwarded } from './reexport-barrel.js';\nexport function reexportEntry() { publicForwarded(); }\n",
+    );
     let mut mcp = Mcp::start(&repo);
 
     let list = mcp.request("tools/list", json!({}));
@@ -219,6 +228,29 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
     let worker = text(&worker_response);
     assert!(worker.contains("src/worker.ts::Worker.leaf"));
     assert!(worker.contains("call at src/worker.ts:1:"));
+    assert!(
+        text(&mcp.call(
+            "trace",
+            json!({
+                "from": "src/reexport-use.ts::reexportEntry",
+                "to": "src/reexport-source.ts::forwarded"
+            })
+        ))
+        .contains("Known CALLS path")
+    );
+
+    repo.write("src/reexport-source.ts", "export function renamed() {}\n");
+    assert!(
+        text(&mcp.call("find", json!({"query": "renamed"})))
+            .contains("src/reexport-source.ts::renamed")
+    );
+    assert!(
+        text(&mcp.call(
+            "inspect",
+            json!({"target": "src/reexport-use.ts::reexportEntry"})
+        ))
+        .contains("Direct callees: none")
+    );
 
     repo.write(
         "src/worker.ts",

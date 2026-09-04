@@ -90,3 +90,13 @@ Inside an indexed direct class method, BlastRay resolves a non-computed
 `this.method()` only when the same class defines exactly one method with that
 name and matching staticness. It does not infer inheritance, external objects,
 computed properties, chained receivers, or aliases of `this`.
+
+## Mission 9 boundary
+
+BlastRay forwards a relative one-hop named re-export only when its source module
+and already-direct exported callable are each unique. The forwarding module adds
+an internal file dependency, but the CALLS edge targets the original canonical
+symbol. Wildcards, chains, default forwarding, type-only exports, missing
+exports, and ambiguous source modules remain unresolved or ambiguous. Refresh
+uses the reverse importer closure so edits to a re-export source re-resolve its
+barrel consumers.

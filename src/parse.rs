@@ -10,6 +10,7 @@ pub(crate) struct ParsedFile {
     pub path: String,
     pub symbols: Vec<SymbolDraft>,
     pub imports: Vec<ImportDraft>,
+    pub reexports: Vec<ReexportDraft>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -48,6 +49,21 @@ pub(crate) struct ImportDraft {
 }
 
 #[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct ReexportDraft {
+    pub module: String,
+    pub line: usize,
+    pub column: usize,
+    pub bindings: Vec<ReexportBinding>,
+    pub type_only: bool,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct ReexportBinding {
+    pub local: String,
+    pub exported: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
 pub(crate) enum ImportBinding {
     Named { local: String, imported: String },
     Default { local: String },
@@ -74,6 +90,7 @@ pub(crate) fn parse_file(path: &str, source: &str) -> Result<ParsedFile, String>
         path: path.to_string(),
         symbols: Vec::new(),
         imports: Vec::new(),
+        reexports: Vec::new(),
     };
     let mut cursor = tree.root_node().walk();
 
@@ -104,6 +121,9 @@ fn language(path: &str) -> Option<Language> {
 fn add_export(parsed: &mut ParsedFile, node: Node<'_>, source: &str) {
     let text = text(node, source).trim_start();
     let default_export = text.starts_with("export default");
+    if let Some(reexport) = reexport_draft(node, source) {
+        parsed.reexports.push(reexport);
+    }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         match child.kind() {
@@ -115,6 +135,49 @@ fn add_export(parsed: &mut ParsedFile, node: Node<'_>, source: &str) {
             _ => {}
         }
     }
+}
+
+fn reexport_draft(node: Node<'_>, source: &str) -> Option<ReexportDraft> {
+    let module = node
+        .child_by_field_name("source")
+        .map(|source_node| string_text(source_node, source))?;
+    let export_text = text(node, source).trim_start();
+    let open = export_text.find('{')?;
+    let close = export_text[open + 1..].find('}')? + open + 1;
+    let mut bindings = Vec::new();
+    for specifier in export_text[open + 1..close].split(',') {
+        let words: Vec<_> = specifier.split_whitespace().collect();
+        let Some(local) = words.first() else {
+            continue;
+        };
+        if *local == "type" {
+            continue;
+        }
+        let exported = words
+            .windows(2)
+            .find(|pair| pair[0] == "as")
+            .map(|pair| pair[1])
+            .unwrap_or(local);
+        if is_identifier(local) && is_identifier(exported) {
+            bindings.push(ReexportBinding {
+                local: (*local).to_string(),
+                exported: exported.to_string(),
+            });
+        }
+    }
+    (!bindings.is_empty()).then(|| ReexportDraft {
+        module,
+        line: node.start_position().row + 1,
+        column: node.start_position().column + 1,
+        bindings,
+        type_only: export_text.starts_with("export type "),
+    })
+}
+
+fn is_identifier(value: &str) -> bool {
+    value
+        .chars()
+        .all(|character| character == '_' || character == '$' || character.is_alphanumeric())
 }
 
 fn add_variable_callables(parsed: &mut ParsedFile, node: Node<'_>, source: &str, exported: bool) {

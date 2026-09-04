@@ -265,3 +265,57 @@ and `McpRepositoryPolicy.unrestricted`; the named-import examples include
 `McpRepositoryPolicy.unrestricted` in `src/mcp/server.ts`. The remaining
 dominant forms are globals such as `Math.floor`, `Number.parseInt`, and
 `JSON.stringify`, which are not indexed project Classes.
+
+## Mission 9 imported-binding census and named re-exports
+
+The Mission 8 release index was joined to its parsed imports and target-module
+export syntax. Counts are unresolved import bindings; the 858 downstream
+"imported binding is not uniquely resolved" call diagnostics were separately
+attributed to those bindings. A temporary in-crate probe was removed after
+measurement.
+
+| cause | bindings | affected direct call sites |
+| --- | ---: | ---: |
+| non-relative module | 6,720 | 778 |
+| type-only import | 2,815 | 0 |
+| callable absent from resolved module | 2,031 | 41 |
+| named one-hop re-export | 373 | 35 |
+| existing non-callable symbol | 341 | 0 |
+| type-only export | 115 | 0 |
+| wildcard re-export | 31 | 0 |
+| relative module not found | 19 | 2 |
+| local export list / alias | 2 | 2 |
+| aliased named re-export | 1 | 0 |
+
+Of the 374 named/aliased re-exports, 287 forwarded a unique direct callable in
+one hop; 3 needed an indirect chain, 45 had no indexed source module, and 39
+had a missing or unsupported source export. This selected one-hop named
+re-exports, including aliases; it deliberately excludes chains and wildcards.
+
+Build release mode and run against a disposable reference copy:
+
+```text
+cargo build --release
+benchmark_dir=$(mktemp -d /tmp/blastray-mission9-XXXXXX)
+cp -a misc/references/gitnexus/gitnexus/. "$benchmark_dir"
+(cd "$benchmark_dir" && TIMEFORMAT='cold=%3R seconds'; time /workspaces/blastray/target/release/blastray find analyze)
+(cd "$benchmark_dir" && TIMEFORMAT='warm=%3R seconds'; time /workspaces/blastray/target/release/blastray find analyze)
+wc -c < "$benchmark_dir/.blastray/index.bin"
+```
+
+| metric | Mission 8 | Mission 9 |
+| --- | ---: | ---: |
+| source files | 2,430 | 2,430 |
+| symbols | 9,376 | 9,376 |
+| resolved IMPORTS | 5,739 | 5,914 |
+| resolved CALLS | 9,738 | 9,768 |
+| unresolved issues | 48,187 | 47,865 |
+| ambiguous issues | 1 | 1 |
+| cache size | 16,698,099 bytes | 16,708,417 bytes |
+| cold `find analyze` | 4.088 s | 4.089 s |
+| warm `find analyze` | 0.274 s | 0.292 s |
+
+The selected forwarding facts changed from 374 unresolved named-re-export
+bindings to 287 proven forwardings, 0 new ambiguous forwardings, and 87
+unsupported/missing/indirect cases. They restored 30 confirmed CALLS edges.
+These are single-run environment measurements, not public performance claims.

@@ -73,3 +73,12 @@ a direct non-computed `this.member()` from other member calls. Resolution uses a
 temporary per-build map keyed by file, class, member name, and staticness. One
 unique matching method becomes a CALLS edge; no match is unresolved and more
 than one is ambiguous. Cache schema 4 invalidates pre-`this` persisted facts.
+
+## Mission 9 named re-exports
+
+Parsed files retain relative named re-export bindings (`local` -> module-visible
+`exported` name). Resolution maps a unique one-hop binding to the underlying
+canonical Function symbol; it does not create a barrel symbol. The re-exporting
+file has an IMPORTS dependency on a uniquely resolved source module, and refresh
+re-resolves the reverse importer closure. Cache schema 5 invalidates prior
+parsed artifacts.

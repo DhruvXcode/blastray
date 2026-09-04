@@ -108,13 +108,12 @@
 
 ## Mission 8 decision
 
-- Finding: of 2,540 direct uppercase/class-static-shaped receiver calls in the
-  pinned GitNexus source set, only six resolve structurally to a unique local
-  or relative-imported indexed Class with a unique static method. Most are
-  unindexed globals or external APIs (`Math`, `Number`, `JSON`); 22 are chained
-  or prototype shapes.
-  Why it matters: class-like spelling is not evidence of a project Class. The
-  deterministic subset is too small to justify typed class-import plumbing or
-  broadened receiver handling; retain the conservative unresolved result.
-  Reference: release-mode Mission 8 census over `gitnexus` commit `932d937085e14664f4ef97b06506bf01034497ab`; representative
-  `src/mcp/local/local-backend.ts`, `src/mcp/repository-policy.ts`.
+- Finding: only six of 2,540 direct class-static-shaped calls resolved to a unique indexed Class/static method; globals (`Math`, `Number`, `JSON`) dominated.
+  Why it matters: class-like spelling is not evidence; retain conservative receivers.
+  Reference: Mission 8 census over GitNexus `932d937`; `src/mcp/local/local-backend.ts`.
+
+## Mission 9 decision
+
+- Finding: 287 of 374 named re-export bindings forwarded a unique direct callable; only three needed chains and wildcards had no observed direct call-site value.
+  Why it matters: one-hop named forwarding is high-confidence and keeps canonical identity intact; export closure would add complexity without measured need.
+  Reference: Mission 9 census; `src/core/auto-sync/index.ts`, `src/core/ingestion/pipeline-phases/index.ts` in GitNexus `932d937`.
