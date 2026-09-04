@@ -234,3 +234,34 @@ to 1,871 resolved, 169 explicitly missing same-class methods, and 16 remaining
 unsupported dynamic/private forms. A warm live-MCP `find("watch queue")` took
 0.115 s in one release-mode run. These are environment-specific measurements,
 not public performance claims.
+
+## Mission 8 class/static receiver census (no semantic change selected)
+
+The Mission 7 release index built the same pinned GitNexus source set in
+release mode. A temporary in-crate census joined each unresolved receiver issue
+to its originating parsed call, then applied only the proposed direct,
+non-computed class-receiver rules: a unique same-file indexed Class or a unique
+relative named/default import resolving to an exported indexed Class, followed
+by a unique indexed static method. The probe was removed after measurement.
+Counts are call sites, not graph edges.
+
+| direct class/static-shaped category | count |
+| --- | ---: |
+| A. same-file indexed `Class.staticMethod()` | 3 |
+| B. relative named imported Class | 3 |
+| C. relative aliased imported Class | 0 |
+| D. relative default imported Class | 0 |
+| E. uppercase-looking receiver not proven to be an indexed Class | 2,487 |
+| F. package/external receiver | 25 |
+| G. chained/prototype or other non-direct shape | 22 |
+| total direct class/static-shaped subset | 2,540 |
+
+The prior broader syntax census reported 2,571 class/static-looking sites; 31
+of those were not direct identifier-receiver forms under the Mission 8 rules.
+Only 6 direct sites (0.24% of the direct subset) were deterministically
+resolvable, so BlastRay intentionally made no Mission 8 semantic change. The
+same-file examples were `LocalBackend.formatGroupResourcePayload` (two sites)
+and `McpRepositoryPolicy.unrestricted`; the named-import examples include
+`McpRepositoryPolicy.unrestricted` in `src/mcp/server.ts`. The remaining
+dominant forms are globals such as `Math.floor`, `Number.parseInt`, and
+`JSON.stringify`, which are not indexed project Classes.

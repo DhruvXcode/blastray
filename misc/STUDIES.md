@@ -105,3 +105,16 @@
   add complexity for little observed benefit.
   Reference: census over `gitnexus` commit `932d937085e14664f4ef97b06506bf01034497ab`;
   representative `gitnexus/src/cli/watch-queue.ts`.
+
+## Mission 8 decision
+
+- Finding: of 2,540 direct uppercase/class-static-shaped receiver calls in the
+  pinned GitNexus source set, only six resolve structurally to a unique local
+  or relative-imported indexed Class with a unique static method. Most are
+  unindexed globals or external APIs (`Math`, `Number`, `JSON`); 22 are chained
+  or prototype shapes.
+  Why it matters: class-like spelling is not evidence of a project Class. The
+  deterministic subset is too small to justify typed class-import plumbing or
+  broadened receiver handling; retain the conservative unresolved result.
+  Reference: release-mode Mission 8 census over `gitnexus` commit `932d937085e14664f4ef97b06506bf01034497ab`; representative
+  `src/mcp/local/local-backend.ts`, `src/mcp/repository-policy.ts`.
