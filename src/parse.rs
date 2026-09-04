@@ -80,6 +80,9 @@ pub(crate) fn parse_file(path: &str, source: &str) -> Result<ParsedFile, String>
             "import_statement" => parsed.imports.push(import_draft(child, source)),
             "function_declaration" => add_function(&mut parsed, child, source, false, false),
             "class_declaration" => add_class(&mut parsed, child, source, false, false),
+            "lexical_declaration" | "variable_declaration" => {
+                add_variable_callables(&mut parsed, child, source, false)
+            }
             "export_statement" => add_export(&mut parsed, child, source),
             _ => {}
         }
@@ -104,8 +107,52 @@ fn add_export(parsed: &mut ParsedFile, node: Node<'_>, source: &str) {
         match child.kind() {
             "function_declaration" => add_function(parsed, child, source, true, default_export),
             "class_declaration" => add_class(parsed, child, source, true, default_export),
+            "lexical_declaration" | "variable_declaration" => {
+                add_variable_callables(parsed, child, source, true)
+            }
             _ => {}
         }
+    }
+}
+
+fn add_variable_callables(parsed: &mut ParsedFile, node: Node<'_>, source: &str, exported: bool) {
+    let mut cursor = node.walk();
+    for declarator in node.named_children(&mut cursor) {
+        if declarator.kind() != "variable_declarator" {
+            continue;
+        }
+        let Some(name_node) = declarator.child_by_field_name("name") else {
+            continue;
+        };
+        if name_node.kind() != "identifier" {
+            continue;
+        }
+        let Some(value) = declarator.child_by_field_name("value") else {
+            continue;
+        };
+        if !matches!(
+            value.kind(),
+            "arrow_function" | "function" | "function_expression"
+        ) {
+            continue;
+        }
+        let name = text(name_node, source).to_string();
+        let (calls, shadowed) = callable_body(value, source);
+        let position = declarator.start_position();
+        let end_position = value.end_position();
+        parsed.symbols.push(SymbolDraft {
+            canonical: format!("{}::{name}", parsed.path),
+            name,
+            file: parsed.path.clone(),
+            line: position.row + 1,
+            end_line: end_position.row + 1,
+            column: position.column + 1,
+            kind: SymbolKind::Function,
+            exported,
+            default_export: false,
+            calls,
+            shadowed,
+        });
     }
 }
 
@@ -223,7 +270,7 @@ fn walk_body(
             }
             return;
         }
-        "function" | "arrow_function" | "method_definition" => return,
+        "function" | "function_expression" | "arrow_function" | "method_definition" => return,
         "variable_declarator" => {
             if let Some(name) = node.child_by_field_name("name") {
                 binding_names(name, source, shadowed);

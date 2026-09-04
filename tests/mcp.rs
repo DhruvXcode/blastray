@@ -166,6 +166,9 @@ fn meaning(graph: &Graph) -> String {
             "C:{}:{}\n",
             graph.symbols[edge.from].canonical, graph.symbols[edge.to].canonical
         ));
+        for site in graph.call_sites(edge.from, edge.to) {
+            result.push_str(&format!("E:{}:{}\n", site.line, site.column));
+        }
     }
     for issue in &graph.issues {
         result.push_str(&format!(
@@ -211,7 +214,7 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
 
     repo.write(
         "src/a.ts",
-        "export function leaf() { return; }\nexport function fresh() {}\n",
+        "export const leaf = () => { return; };\nexport const fresh = async () => {};\n",
     );
     let refreshed = mcp.call("find", json!({"query": "fresh"}));
     assert!(text(&refreshed).contains("src/a.ts::fresh"));

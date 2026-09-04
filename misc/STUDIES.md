@@ -83,3 +83,14 @@
   class, or method, sorts canonical roots, and uses one deduplicated reverse
   traversal for all roots.
   Reference: `gitnexus/src/mcp/local/local-backend.ts` (`detectChanges`).
+
+## Mission 6 addition
+
+- Finding: TypeScript sources in GitNexus use runtime `.js` relative specifiers
+  while the indexed implementation is `.ts`, and important exported lifecycle
+  callables are arrow-function `const` bindings.
+  Why it matters: a narrow exact-first ESM substitution plus callable-binding
+  extraction restores confirmed edges without package or type-system guessing.
+  Reference: `gitnexus/src/core/run-analyze.ts`,
+  `gitnexus/src/storage/index-lock.ts`,
+  `gitnexus/src/core/search/fts-indexes.ts`.

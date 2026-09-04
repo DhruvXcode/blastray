@@ -20,7 +20,7 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 2;
+const CACHE_SCHEMA: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SymbolKind {
@@ -73,6 +73,12 @@ pub struct CallEdge {
     pub to: usize,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct CallSite {
+    pub line: usize,
+    pub column: usize,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum RelationshipStatus {
     Unresolved,
@@ -109,6 +115,7 @@ pub struct Graph {
     imports_from: Vec<Vec<usize>>,
     callers_of: Vec<Vec<usize>>,
     callees_of: Vec<Vec<usize>>,
+    call_sites: BTreeMap<(usize, usize), Vec<CallSite>>,
     canonical_symbols: BTreeMap<String, Vec<usize>>,
     named_symbols: BTreeMap<String, Vec<usize>>,
 }
@@ -135,6 +142,13 @@ impl Graph {
     pub fn callees(&self, symbol: usize) -> &[usize] {
         self.callees_of
             .get(symbol)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn call_sites(&self, from: usize, to: usize) -> &[CallSite] {
+        self.call_sites
+            .get(&(from, to))
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
@@ -503,8 +517,16 @@ fn relative_path(root: &Path, path: &Path) -> Result<String, String> {
 #[derive(Clone, Default, Deserialize, Serialize)]
 struct FileResolution {
     imports: Vec<String>,
-    calls: Vec<(String, String)>,
+    calls: Vec<ResolvedCall>,
     issues: Vec<RelationshipIssue>,
+}
+
+#[derive(Clone, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+struct ResolvedCall {
+    from: String,
+    to: String,
+    line: usize,
+    column: usize,
 }
 
 struct ResolveContext {
@@ -615,7 +637,12 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> FileResolution {
             candidates.sort();
             candidates.dedup();
             match candidates.as_slice() {
-                [target] => result.calls.push((draft.canonical.clone(), target.clone())),
+                [target] => result.calls.push(ResolvedCall {
+                    from: draft.canonical.clone(),
+                    to: target.clone(),
+                    line: call.line,
+                    column: call.column,
+                }),
                 [] if !bindings.contains_key(&key) => result.issues.push(issue(
                     RelationshipStatus::Unresolved,
                     &draft.canonical,
@@ -818,7 +845,7 @@ fn materialize_graph(
     let canonical_symbols = ids_by(&symbols, |symbol| symbol.canonical.clone());
     let named_symbols = ids_by(&symbols, |symbol| symbol.name.clone());
     let mut imports = Vec::new();
-    let mut calls = Vec::new();
+    let mut call_sites: BTreeMap<(usize, usize), Vec<CallSite>> = BTreeMap::new();
     let mut issues = Vec::new();
     for (path, facts) in resolved {
         let from = file_ids[path];
@@ -828,29 +855,38 @@ fn materialize_graph(
                 .iter()
                 .filter_map(|target| file_ids.get(target).map(|to| ImportEdge { from, to: *to })),
         );
-        calls.extend(facts.calls.iter().filter_map(|(from, to)| {
-            match (
-                canonical_symbols.get(from).map(Vec::as_slice),
-                canonical_symbols.get(to).map(Vec::as_slice),
+        for call in &facts.calls {
+            if let (Some([from]), Some([to])) = (
+                canonical_symbols.get(&call.from).map(Vec::as_slice),
+                canonical_symbols.get(&call.to).map(Vec::as_slice),
             ) {
-                (Some([from]), Some([to])) => Some(CallEdge {
-                    from: *from,
-                    to: *to,
-                }),
-                _ => None,
+                call_sites.entry((*from, *to)).or_default().push(CallSite {
+                    line: call.line,
+                    column: call.column,
+                });
             }
-        }));
+        }
         issues.extend(facts.issues.iter().cloned());
     }
     imports.sort_by_key(|edge| (edge.from, edge.to));
     imports.dedup_by_key(|edge| (edge.from, edge.to));
+    for sites in call_sites.values_mut() {
+        sites.sort();
+        sites.dedup();
+    }
+    let mut calls: Vec<CallEdge> = call_sites
+        .keys()
+        .map(|(from, to)| CallEdge {
+            from: *from,
+            to: *to,
+        })
+        .collect();
     calls.sort_by(|left, right| {
         symbols[left.from]
             .canonical
             .cmp(&symbols[right.from].canonical)
             .then_with(|| symbols[left.to].canonical.cmp(&symbols[right.to].canonical))
     });
-    calls.dedup_by_key(|edge| (edge.from, edge.to));
     issues.sort_by(issue_order);
 
     let mut imports_from = vec![Vec::new(); files.len()];
@@ -881,6 +917,7 @@ fn materialize_graph(
         imports_from,
         callers_of,
         callees_of,
+        call_sites,
         canonical_symbols,
         named_symbols,
     }
@@ -912,6 +949,30 @@ fn module_candidates(from: &str, request: &str, files: &BTreeSet<String>) -> Vec
     let mut candidates = BTreeSet::new();
     if is_source_file(&base) {
         insert_candidate(&base, files, &mut candidates);
+        if !candidates.is_empty() {
+            return candidates.into_iter().collect();
+        }
+        let extensions = match base.extension().and_then(|extension| extension.to_str()) {
+            Some("js") => Some(["ts", "tsx", "js", "jsx"].as_slice()),
+            Some("jsx") => Some(["tsx", "jsx"].as_slice()),
+            _ => None,
+        };
+        if let Some(extensions) = extensions {
+            for extension in extensions {
+                insert_candidate(&base.with_extension(extension), files, &mut candidates);
+            }
+            if !candidates.is_empty() {
+                return candidates.into_iter().collect();
+            }
+            let stem = base.with_extension("");
+            for extension in extensions {
+                insert_candidate(
+                    &stem.join("index").with_extension(extension),
+                    files,
+                    &mut candidates,
+                );
+            }
+        }
     } else {
         for extension in EXTENSIONS {
             insert_candidate(&base.with_extension(extension), files, &mut candidates);
@@ -1064,6 +1125,9 @@ mod tests {
                 "C:{}:{}\n",
                 graph.symbols[edge.from].canonical, graph.symbols[edge.to].canonical
             ));
+            for site in graph.call_sites(edge.from, edge.to) {
+                result.push_str(&format!("E:{}:{}\n", site.line, site.column));
+            }
         }
         for issue in &graph.issues {
             result.push_str(&format!(
@@ -1344,6 +1408,183 @@ mod tests {
             "export function leaf() {}\nexport function entry() { leaf(); leaf(); }\n",
         );
         assert_persistent_equivalent(&repo);
+    }
+
+    #[test]
+    fn esm_js_specifiers_resolve_typescript_targets_conservatively() {
+        let repo = Repo::new(&[
+            (
+                "src/api.ts",
+                "export const callable = async () => {};\nexport const expression = function () {};\n",
+            ),
+            (
+                "src/use.ts",
+                "import { callable, expression } from './api.js';\nexport const entry = () => { callable(); expression(); };\n",
+            ),
+        ]);
+        let index = Index::build(&repo.0).unwrap();
+        let graph = index.graph();
+        assert!(
+            query::trace(graph, "src/use.ts::entry", "src/api.ts::callable")
+                .unwrap()
+                .contains("Known CALLS path")
+        );
+        assert!(
+            query::inspect(graph, "src/use.ts::entry")
+                .unwrap()
+                .contains("src/api.ts::expression")
+        );
+        assert!(query::find(graph, "callable").contains("exact name"));
+        assert!(!query::find(graph, "notCallable").contains("src/api.ts"));
+    }
+
+    #[test]
+    fn esm_js_specifier_prefers_exact_target_and_marks_multiple_substitutions_ambiguous() {
+        let exact = Repo::new(&[
+            ("src/api.js", "export const selected = () => {};\n"),
+            ("src/api.ts", "export const selected = () => {};\n"),
+            (
+                "src/use.ts",
+                "import { selected } from './api.js';\nexport function entry() { selected(); }\n",
+            ),
+        ]);
+        let index = Index::build(&exact.0).unwrap();
+        assert!(
+            query::inspect(index.graph(), "src/use.ts::entry")
+                .unwrap()
+                .contains("src/api.js::selected")
+        );
+
+        let ambiguous = Repo::new(&[
+            ("src/api.ts", "export const selected = () => {};\n"),
+            ("src/api.tsx", "export const selected = () => {};\n"),
+            (
+                "src/use.ts",
+                "import { selected } from './api.js';\nexport function entry() { selected(); }\n",
+            ),
+        ]);
+        let index = Index::build(&ambiguous.0).unwrap();
+        let output = query::inspect(index.graph(), "src/use.ts::entry").unwrap();
+        assert!(output.contains("AMBIGUOUS"));
+    }
+
+    #[test]
+    fn esm_js_specifier_can_resolve_a_typescript_index_file() {
+        let repo = Repo::new(&[
+            ("src/api/index.ts", "export const selected = () => {};\n"),
+            (
+                "src/use.ts",
+                "import { selected } from './api.js';\nexport function entry() { selected(); }\n",
+            ),
+        ]);
+        let index = Index::build(&repo.0).unwrap();
+        assert!(
+            query::trace(
+                index.graph(),
+                "src/use.ts::entry",
+                "src/api/index.ts::selected"
+            )
+            .unwrap()
+            .contains("Known CALLS path")
+        );
+    }
+
+    #[test]
+    fn callable_variables_refresh_and_persist_like_a_full_build() {
+        let repo = Repo::new(&[
+            ("src/a.ts", "export const leaf = () => {};\n"),
+            (
+                "src/b.ts",
+                "import { leaf } from './a.js';\nexport const entry = () => { leaf(); leaf(); };\n",
+            ),
+        ]);
+        let mut index = Index::build(&repo.0).unwrap();
+        assert_eq!(index.graph().calls.len(), 1);
+        assert_eq!(
+            index
+                .graph()
+                .call_sites(
+                    index.graph().symbol_candidates("src/b.ts::entry")[0],
+                    index.graph().symbol_candidates("src/a.ts::leaf")[0]
+                )
+                .len(),
+            2
+        );
+        repo.write(
+            "src/b.ts",
+            "import { leaf } from './a.js';\nexport const entry = () => { leaf(); };\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("src/b.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        let persistent = Index::open(&repo.0).unwrap();
+        assert_equivalent(&persistent, &full);
+    }
+
+    #[test]
+    fn variable_bindings_and_nested_callable_scopes_remain_conservative() {
+        let repo = Repo::new(&[(
+            "src/a.ts",
+            "const value = 1;\nexport const leaf = () => {};\nexport const entry = () => { const leaf = () => {}; leaf(); };\n",
+        )]);
+        let index = Index::build(&repo.0).unwrap();
+        assert!(!query::find(index.graph(), "value").contains("src/a.ts::value"));
+        let output = query::inspect(index.graph(), "src/a.ts::entry").unwrap();
+        assert!(output.contains("unmodeled local binding could shadow this name"));
+    }
+
+    #[test]
+    fn ranked_find_is_deterministic_multi_word_and_capped() {
+        let mut files = vec![
+            ("src/exact.ts", "export function Analyze() {}\n"),
+            (
+                "src/incremental-index.ts",
+                "export function rebuildIncrementalIndex() {}\n",
+            ),
+        ];
+        let generated: Vec<(String, String)> = (0..24)
+            .map(|number| {
+                (
+                    format!("src/analyze-{number}.ts"),
+                    format!("export function analyze{number}() {{}}\n"),
+                )
+            })
+            .collect();
+        for (path, source) in &generated {
+            files.push((path, source));
+        }
+        let repo = Repo::new(&files);
+        let index = Index::build(&repo.0).unwrap();
+        let exact = query::find(index.graph(), "Analyze");
+        assert!(
+            exact.find("src/exact.ts::Analyze").unwrap()
+                < exact.find("src/analyze-0.ts::analyze0").unwrap()
+        );
+        let multi_word = query::find(index.graph(), "incremental index");
+        assert!(multi_word.contains("src/incremental-index.ts::rebuildIncrementalIndex"));
+        let capped = query::find(index.graph(), "analyze");
+        assert!(capped.starts_with("Showing 20 of 25 matches; refine the query."));
+        assert_eq!(capped, query::find(index.graph(), "analyze"));
+    }
+
+    #[test]
+    fn resolved_calls_expose_deterministic_call_site_evidence() {
+        let repo = Repo::new(&[(
+            "src/a.ts",
+            "export function leaf() {}\nexport function middle() { leaf(); leaf(); }\nexport function entry() { middle(); }\n",
+        )]);
+        let index = Index::build(&repo.0).unwrap();
+        let inspect = query::inspect(index.graph(), "src/a.ts::middle").unwrap();
+        assert!(inspect.contains("calls at src/a.ts:2:28, src/a.ts:2:36"));
+        let trace = query::trace(index.graph(), "entry", "leaf").unwrap();
+        assert!(trace.contains("Call-site evidence:"));
+        assert!(trace.contains("src/a.ts::entry -> src/a.ts::middle [call at src/a.ts:3:"));
+        let impact = query::impact(index.graph(), "leaf").unwrap();
+        assert!(impact.contains("Direct caller evidence:"));
+        assert!(impact.contains("src/a.ts::middle [calls at src/a.ts:2:28, src/a.ts:2:36]"));
     }
 
     #[test]

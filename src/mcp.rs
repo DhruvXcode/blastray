@@ -85,7 +85,7 @@ struct ImpactInput {
 impl Server {
     #[tool(
         name = "find",
-        description = "Locate indexed code symbols with deterministic structural and textual matching. Use this to find a symbol before deeper inspection."
+        description = "Locate indexed code symbols with deterministic ranked lexical and structural matching. Use this to find a symbol before deeper inspection; it does not perform semantic or embedding search."
     )]
     fn find(&self, Parameters(FindInput { query }): Parameters<FindInput>) -> CallToolResult {
         self.answer(|index| Ok(query::find(index.graph(), &query)))

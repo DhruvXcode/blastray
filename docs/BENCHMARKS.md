@@ -143,3 +143,40 @@ The first GitNexus changed-diff result includes an initially cold persistent
 cache write. A subsequent source edit in the same live process measured 0.325
 s for sync and 0.252 s for post-sync diff analysis. These are one-run,
 environment-specific measurements, not public performance claims.
+
+## Mission 6 GitNexus structural coverage and ranked find
+
+Build release mode, use a disposable copy of the pinned reference, then invoke
+the same query twice so the second invocation uses the persistent cache:
+
+```text
+cargo build --release
+benchmark_dir=$(mktemp -d /tmp/blastray-mission6-XXXXXX)
+cp -a misc/references/gitnexus/gitnexus/. "$benchmark_dir"
+(cd "$benchmark_dir" && /workspaces/blastray/target/release/blastray find analyze)
+(cd "$benchmark_dir" && TIMEFORMAT='warm=%3R seconds'; time /workspaces/blastray/target/release/blastray find analyze)
+wc -c < "$benchmark_dir/.blastray/index.bin"
+```
+
+The baseline was the Mission 5 binary and the after measurement was Mission 6,
+both against the same 2,430-file source copy. Relationship counts are graph
+edges; unresolved and ambiguous counts are explicit issues. The MCP timings
+are one warmed JSON-RPC `find("analyze")` call in a live stdio server.
+
+| metric | Mission 5 | Mission 6 |
+| --- | ---: | ---: |
+| symbols | 7,543 | 9,376 |
+| resolved IMPORTS | 187 | 5,739 |
+| resolved CALLS | 3,833 | 8,284 |
+| unresolved issues | 60,120 | 50,058 |
+| ambiguous issues | 1 | 1 |
+| `.blastray/index.bin` | 16,072,148 bytes | 16,680,879 bytes |
+| warm CLI `find analyze` | 0.246 s | 0.279 s |
+| warm MCP `find analyze` | 0.111 s | 0.116 s |
+| `find analyze` emitted / total matches | 179 / 179 | 20 / 240 |
+| CLI find output | 180 lines, 17,522 bytes | 22 lines, 2,182 bytes |
+
+A read-only Mission 6 MCP pass resolved and traced all three previously missing
+direct calls from `runFullAnalysis`: `acquireIndexLock`,
+`initialiseSearchFTSStemmer`, and `resetDegradedParseCounter`. These are
+single-run environment-specific measurements, not public performance claims.

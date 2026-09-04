@@ -73,3 +73,13 @@ directory. It exposes only `find`, `inspect`, `trace`, and `impact`, and holds
 one live `Index` behind a mutex. Each tool call synchronizes source hashes and
 uses the existing incremental/full-rebuild rules before answering; no watcher,
 agent files, prompts, resources, or alternate graph format is added.
+
+## Mission 6 boundary
+
+Relative TypeScript imports may use Node ESM runtime `.js` or `.jsx` specifiers
+when no exact source file exists: BlastRay checks the compatible TypeScript
+source candidates and reports multiple matches as ambiguous. It indexes only
+plain top-level identifier bindings whose initializer is an arrow function or
+function expression. `find` remains deterministic lexical ranking with a small
+display cap, and resolved CALLS retain call-site locations for existing
+`inspect`, `trace`, and direct `impact` evidence.

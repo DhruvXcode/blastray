@@ -14,12 +14,13 @@ It will provide four primitives:
 
 ## Status
 
-Mission 4 provides a deterministic TypeScript/JavaScript slice for `.ts`,
+Mission 6 provides a deterministic TypeScript/JavaScript slice for `.ts`,
 `.tsx`, `.js`, and `.jsx` files, with a persistent local index and
 `impact --diff` for staged plus unstaged Git changes. It indexes named
-top-level functions, classes, and class methods; resolves only confirmed local
-or relative-imported function calls; and reports uncertainty instead of
-guessing.
+top-level functions, callable top-level `const` bindings, classes, and class
+methods; resolves only confirmed local or relative-imported function calls; and
+reports uncertainty instead of guessing. `find` is compact ranked lexical
+search, not semantic search.
 
 The same four primitives are available to MCP-capable coding agents through
 the stdio server: `blastray mcp`.

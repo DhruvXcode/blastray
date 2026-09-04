@@ -54,3 +54,14 @@ reloading `.blastray/index.bin`. It keeps unchanged in-memory artifacts,
 incrementally refreshes modified existing supported files, or rebuilds and
 persists on a source file-set change or uncertain refresh. MCP uses this before
 each tool call.
+
+## Mission 6 callable and call-site facts
+
+Top-level identifier bindings with arrow-function or function-expression
+initializers are Function symbols, including named exports. Relative `.js`
+specifier substitution checks an exact file first, then compatible `.ts`/`.tsx`
+or `.jsx` candidates; more than one candidate remains ambiguous. Per-file
+resolved CALLS facts retain one or more one-based call-site line/column pairs.
+The materialized graph still has one edge per source/target pair, with sorted
+forward/reverse adjacency and separate evidence lookup. Cache schema 3
+invalidates pre-evidence persisted facts.

@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use crate::index::{Graph, RelationshipIssue, Symbol};
 
 const MAX_TRAVERSAL: usize = 500;
+const FIND_LIMIT: usize = 20;
 
 pub(crate) struct ReverseImpact {
     pub by_depth: BTreeMap<usize, Vec<usize>>,
@@ -35,30 +36,157 @@ pub(crate) fn reverse_impact(graph: &Graph, roots: &BTreeSet<usize>) -> ReverseI
 }
 
 pub fn find(graph: &Graph, query: &str) -> String {
-    let query = query.to_lowercase();
-    let matches: Vec<&Symbol> = graph
+    let query_tokens = tokens(query);
+    let mut matches: Vec<_> = graph
         .symbols
         .iter()
-        .filter(|symbol| {
-            let canonical = symbol.canonical.to_lowercase();
-            let name = symbol.name.to_lowercase();
-            name == query
-                || name.starts_with(&query)
-                || name.contains(&query)
-                || canonical.contains(&query)
-        })
+        .filter_map(|symbol| find_match(graph, symbol, query, &query_tokens))
         .collect();
 
     if matches.is_empty() {
         return format!("No symbols found for '{query}'.");
     }
 
-    let mut output = format!("{} symbol(s):\n", matches.len());
-    for symbol in matches {
-        output.push_str(&symbol_line(graph, symbol));
+    matches.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| right.matched_tokens.cmp(&left.matched_tokens))
+            .then_with(|| left.symbol.canonical.cmp(&right.symbol.canonical))
+    });
+    let total = matches.len();
+    let shown = total.min(FIND_LIMIT);
+    let mut output = String::new();
+    if shown < total {
+        output.push_str(&format!(
+            "Showing {shown} of {total} matches; refine the query.\n"
+        ));
+    }
+    output.push_str(&format!("{shown} symbol(s):\n"));
+    for found in matches.into_iter().take(FIND_LIMIT) {
+        output.push_str(&symbol_line(graph, found.symbol));
+        output.push_str(&format!(" [{}]", found.reason));
         output.push('\n');
     }
     output.trim_end().to_string()
+}
+
+struct FindMatch<'a> {
+    symbol: &'a Symbol,
+    score: usize,
+    matched_tokens: usize,
+    reason: &'static str,
+}
+
+fn find_match<'a>(
+    graph: &Graph,
+    symbol: &'a Symbol,
+    query: &str,
+    query_tokens: &[String],
+) -> Option<FindMatch<'a>> {
+    if query_tokens.is_empty() {
+        return Some(FindMatch {
+            symbol,
+            score: 1,
+            matched_tokens: 0,
+            reason: "all symbols",
+        });
+    }
+    let name = symbol.name.to_lowercase();
+    let canonical = symbol.canonical.to_lowercase();
+    if canonical == query.to_lowercase() {
+        return Some(FindMatch {
+            symbol,
+            score: 1_000,
+            matched_tokens: query_tokens.len(),
+            reason: "exact identity",
+        });
+    }
+    if symbol.name == query {
+        return Some(FindMatch {
+            symbol,
+            score: 900,
+            matched_tokens: query_tokens.len(),
+            reason: "exact name",
+        });
+    }
+    if name == query.to_lowercase() {
+        return Some(FindMatch {
+            symbol,
+            score: 850,
+            matched_tokens: query_tokens.len(),
+            reason: "exact name",
+        });
+    }
+
+    let name_tokens = tokens(&symbol.name);
+    let path_tokens = tokens(&graph.files[symbol.file].path);
+    let mut score = 0;
+    let mut matched_tokens = 0;
+    let mut reason = "substring match";
+    for token in query_tokens {
+        if name_tokens.iter().any(|part| part == token) {
+            score += 700;
+            matched_tokens += 1;
+            reason = "name token";
+        } else if name_tokens.iter().any(|part| part.starts_with(token)) {
+            score += 600;
+            matched_tokens += 1;
+            reason = "name prefix";
+        } else if name.contains(token) {
+            score += 400;
+            matched_tokens += 1;
+            reason = "name substring";
+        } else if path_tokens.iter().any(|part| part == token) {
+            score += 300;
+            matched_tokens += 1;
+            if reason == "substring match" {
+                reason = "path match";
+            }
+        } else if path_tokens.iter().any(|part| part.starts_with(token)) {
+            score += 250;
+            matched_tokens += 1;
+            if reason == "substring match" {
+                reason = "path prefix";
+            }
+        } else if canonical.contains(token) {
+            score += 100;
+            matched_tokens += 1;
+        }
+    }
+    let minimum_tokens = if query_tokens.len() > 1 { 2 } else { 1 };
+    (matched_tokens >= minimum_tokens).then_some(FindMatch {
+        symbol,
+        score,
+        matched_tokens,
+        reason,
+    })
+}
+
+fn tokens(value: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut previous_lowercase = false;
+    for character in value.chars() {
+        if !character.is_alphanumeric() {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            previous_lowercase = false;
+            continue;
+        }
+        if character.is_uppercase() && previous_lowercase && !current.is_empty() {
+            tokens.push(std::mem::take(&mut current));
+        }
+        previous_lowercase = character.is_lowercase();
+        current.extend(character.to_lowercase());
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens.sort();
+    tokens.dedup();
+    tokens
 }
 
 pub fn inspect(graph: &Graph, target: &str) -> Result<String, String> {
@@ -78,7 +206,7 @@ pub fn inspect(graph: &Graph, target: &str) -> Result<String, String> {
     );
     append_symbols(&mut output, graph, callers);
     output.push_str("\nDirect callees:");
-    append_symbols(&mut output, graph, callees);
+    append_callees(&mut output, graph, target, callees);
     output.push_str("\nDefining file imports:");
     append_files(&mut output, graph, imports);
     output.push_str("\nUnresolved or ambiguous outgoing calls:");
@@ -141,6 +269,15 @@ pub fn trace(graph: &Graph, from: &str, to: &str) -> Result<String, String> {
         }
     }
     output.push_str("\nOnly RESOLVED calls participate in this path.");
+    output.push_str("\nCall-site evidence:");
+    for hop in path.windows(2) {
+        output.push_str(&format!(
+            "\n- {} -> {}{}",
+            graph.symbols[hop[0]].canonical,
+            graph.symbols[hop[1]].canonical,
+            call_sites(graph, hop[0], hop[1])
+        ));
+    }
     Ok(output)
 }
 
@@ -155,6 +292,16 @@ pub fn impact(graph: &Graph, target: &str) -> Result<String, String> {
         graph.symbols[target].canonical
     );
     append_symbols(&mut output, graph, &direct);
+    if !direct.is_empty() {
+        output.push_str("\nDirect caller evidence:");
+        for caller in &direct {
+            output.push_str(&format!(
+                "\n- {}{}",
+                graph.symbols[*caller].canonical,
+                call_sites(graph, *caller, target)
+            ));
+        }
+    }
     output.push_str("\nTransitive callers:");
     let mut has_transitive = false;
     for (depth, symbols) in result.by_depth.range(2..) {
@@ -233,6 +380,37 @@ fn append_symbols(output: &mut String, graph: &Graph, symbols: &[usize]) {
             "\n- {}",
             symbol_line(graph, &graph.symbols[*symbol])
         ));
+    }
+}
+
+fn append_callees(output: &mut String, graph: &Graph, source: usize, callees: &[usize]) {
+    if callees.is_empty() {
+        output.push_str(" none");
+        return;
+    }
+    for callee in callees {
+        output.push_str(&format!(
+            "\n- {}{}",
+            symbol_line(graph, &graph.symbols[*callee]),
+            call_sites(graph, source, *callee)
+        ));
+    }
+}
+
+fn call_sites(graph: &Graph, from: usize, to: usize) -> String {
+    let source = &graph.files[graph.symbols[from].file].path;
+    let sites = graph.call_sites(from, to);
+    match sites {
+        [] => String::new(),
+        [site] => format!(" [call at {source}:{}:{}]", site.line, site.column),
+        _ => format!(
+            " [calls at {}]",
+            sites
+                .iter()
+                .map(|site| format!("{source}:{}:{}", site.line, site.column))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
