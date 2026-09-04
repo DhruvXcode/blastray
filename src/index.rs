@@ -23,7 +23,7 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 6;
+const CACHE_SCHEMA: u32 = 7;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SymbolKind {
@@ -543,6 +543,8 @@ struct ResolveContext {
     files: BTreeSet<String>,
     canonical_symbols: BTreeMap<String, Vec<String>>,
     local_functions: BTreeMap<(String, String), Vec<String>>,
+    local_classes: BTreeMap<(String, String), Vec<String>>,
+    exported_classes: BTreeMap<(String, String, bool), Vec<String>>,
     this_methods: BTreeMap<(String, String, String, bool), Vec<String>>,
     exports: BTreeMap<(String, String, bool), Vec<String>>,
     ambiguous_exports: BTreeSet<(String, String, bool)>,
@@ -554,6 +556,8 @@ impl ResolveContext {
             files: parsed.keys().cloned().collect(),
             canonical_symbols: BTreeMap::new(),
             local_functions: BTreeMap::new(),
+            local_classes: BTreeMap::new(),
+            exported_classes: BTreeMap::new(),
             this_methods: BTreeMap::new(),
             exports: BTreeMap::new(),
             ambiguous_exports: BTreeSet::new(),
@@ -575,6 +579,27 @@ impl ResolveContext {
                         context
                             .exports
                             .entry((file.path.clone(), symbol.name.clone(), false))
+                            .or_default()
+                            .push(symbol.canonical.clone());
+                    }
+                }
+                if symbol.kind == SymbolKind::Class {
+                    context
+                        .local_classes
+                        .entry((file.path.clone(), symbol.name.clone()))
+                        .or_default()
+                        .push(symbol.canonical.clone());
+                    if symbol.exported {
+                        context
+                            .exported_classes
+                            .entry((file.path.clone(), symbol.name.clone(), false))
+                            .or_default()
+                            .push(symbol.canonical.clone());
+                    }
+                    if symbol.default_export {
+                        context
+                            .exported_classes
+                            .entry((file.path.clone(), String::new(), true))
                             .or_default()
                             .push(symbol.canonical.clone());
                     }
@@ -740,6 +765,15 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> FileResolution {
                 resolve_this_member_call(draft, file, call, context, &mut result);
                 continue;
             }
+            if let Some(receiver) = &call.receiver
+                && draft.receiver_bindings.iter().any(|binding| {
+                    binding.name == *receiver
+                        && (binding.line, binding.column) <= (call.line, call.column)
+                })
+            {
+                resolve_constructor_member_call(draft, file, call, context, &mut result);
+                continue;
+            }
             if !call.direct {
                 result.issues.push(issue(
                     RelationshipStatus::Unresolved,
@@ -809,6 +843,159 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> FileResolution {
     result.calls.dedup();
     result.issues.sort_by(issue_order);
     result
+}
+
+fn resolve_constructor_member_call(
+    draft: &SymbolDraft,
+    file: &ParsedFile,
+    call: &crate::parse::CallDraft,
+    context: &ResolveContext,
+    result: &mut FileResolution,
+) {
+    let receiver = call.receiver.as_ref().unwrap();
+    let bindings = draft
+        .receiver_bindings
+        .iter()
+        .filter(|binding| {
+            binding.name == *receiver && (binding.line, binding.column) <= (call.line, call.column)
+        })
+        .collect::<Vec<_>>();
+    let [binding] = bindings.as_slice() else {
+        result.issues.push(issue(
+            RelationshipStatus::Unresolved,
+            &draft.canonical,
+            call.line,
+            call.column,
+            &call.name,
+            "receiver ownership is not uniquely proven by a direct immutable constructor binding",
+        ));
+        return;
+    };
+    if binding.reassigned {
+        result.issues.push(issue(
+            RelationshipStatus::Unresolved,
+            &draft.canonical,
+            call.line,
+            call.column,
+            &call.name,
+            "receiver binding was reassigned in this callable scope",
+        ));
+        return;
+    }
+    if draft.shadowed.contains(&binding.class) {
+        result.issues.push(issue(
+            RelationshipStatus::Unresolved,
+            &draft.canonical,
+            call.line,
+            call.column,
+            &call.name,
+            "constructor class name could be shadowed in this callable scope",
+        ));
+        return;
+    }
+    let (classes, ambiguous) = constructor_class_candidates(file, &binding.class, context);
+    if ambiguous || classes.len() > 1 {
+        result.issues.push(issue(
+            RelationshipStatus::Ambiguous,
+            &draft.canonical,
+            call.line,
+            call.column,
+            &call.name,
+            "constructor class does not resolve uniquely",
+        ));
+        return;
+    }
+    let [class] = classes.as_slice() else {
+        result.issues.push(issue(
+            RelationshipStatus::Unresolved,
+            &draft.canonical,
+            call.line,
+            call.column,
+            &call.name,
+            "constructor class is not a uniquely indexed local or relative imported Class",
+        ));
+        return;
+    };
+    let Some((class_file, class_name)) = class.rsplit_once("::") else {
+        return;
+    };
+    let methods = context
+        .this_methods
+        .get(&(
+            class_file.to_string(),
+            class_name.to_string(),
+            call.name.clone(),
+            false,
+        ))
+        .cloned()
+        .unwrap_or_default();
+    match methods.as_slice() {
+        [target] => result.calls.push(ResolvedCall {
+            from: draft.canonical.clone(),
+            to: target.clone(),
+            line: call.line,
+            column: call.column,
+        }),
+        [] => result.issues.push(issue(
+            RelationshipStatus::Unresolved,
+            &draft.canonical,
+            call.line,
+            call.column,
+            &call.name,
+            "no matching non-static method exists on the constructor Class",
+        )),
+        _ => result.issues.push(issue(
+            RelationshipStatus::Ambiguous,
+            &draft.canonical,
+            call.line,
+            call.column,
+            &call.name,
+            "multiple non-static methods exist on the constructor Class",
+        )),
+    }
+}
+
+fn constructor_class_candidates(
+    file: &ParsedFile,
+    class: &str,
+    context: &ResolveContext,
+) -> (Vec<String>, bool) {
+    let mut candidates = context
+        .local_classes
+        .get(&(file.path.clone(), class.to_string()))
+        .cloned()
+        .unwrap_or_default();
+    let mut ambiguous = false;
+    for import in &file.imports {
+        if import.type_only {
+            continue;
+        }
+        let source_candidates = module_candidates(&file.path, &import.module, &context.files);
+        for binding in &import.bindings {
+            if binding.local() != class {
+                continue;
+            }
+            if source_candidates.len() > 1 {
+                ambiguous = true;
+                continue;
+            }
+            let [source] = source_candidates.as_slice() else {
+                continue;
+            };
+            let key = match binding {
+                ImportBinding::Named { imported, .. } => (source.clone(), imported.clone(), false),
+                ImportBinding::Default { .. } => (source.clone(), String::new(), true),
+            };
+            candidates.extend(
+                context
+                    .exported_classes
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    (candidates, ambiguous)
 }
 
 fn resolve_reexport_dependency(
@@ -2148,6 +2335,113 @@ mod tests {
             query::inspect(index.graph(), "src/use.ts::entry")
                 .unwrap()
                 .contains("Direct callees: none")
+        );
+        let persistent = Index::open(&repo.0).unwrap();
+        assert_equivalent(&persistent, &full);
+    }
+
+    #[test]
+    fn immutable_constructor_receivers_resolve_unique_instance_methods() {
+        let same_file = Repo::new(&[(
+            "src/worker.ts",
+            "export class Worker { run() {} static staticRun() {} entry() { const worker = new Worker(); worker.run(); worker.run(); } staticEntry() { const worker = new Worker(); worker.staticRun(); } }\n",
+        )]);
+        let index = Index::build(&same_file.0).unwrap();
+        let graph = index.graph();
+        let entry = graph.symbol_candidates("src/worker.ts::Worker.entry")[0];
+        let run = graph.symbol_candidates("src/worker.ts::Worker.run")[0];
+        assert_eq!(graph.call_sites(entry, run).len(), 2);
+        assert!(
+            query::trace(
+                graph,
+                "src/worker.ts::Worker.entry",
+                "src/worker.ts::Worker.run"
+            )
+            .unwrap()
+            .contains("Known CALLS path")
+        );
+        assert!(
+            query::inspect(graph, "src/worker.ts::Worker.staticEntry")
+                .unwrap()
+                .contains("no matching non-static method")
+        );
+
+        let imported = Repo::new(&[
+            ("src/service.ts", "export class Service { run() {} }\n"),
+            (
+                "src/use.ts",
+                "import { Service } from './service.js';\nexport function entry() { const service = new Service(); service.run(); }\n",
+            ),
+        ]);
+        assert!(
+            query::trace(
+                Index::build(&imported.0).unwrap().graph(),
+                "src/use.ts::entry",
+                "src/service.ts::Service.run"
+            )
+            .unwrap()
+            .contains("Known CALLS path")
+        );
+    }
+
+    #[test]
+    fn constructor_receiver_limits_remain_explicit() {
+        let repo = Repo::new(&[(
+            "src/worker.ts",
+            "class Worker { run() {} duplicate() {} duplicate() {} entry(Worker: unknown) { const service = new Worker(); service.run(); } shadow() { const service = new Worker(); { const service = new Worker(); service.run(); } } reassigned() { const service = new Worker(); service = other; service.run(); } mutable() { let service = new Worker(); service = other; service.run(); } conditional() { const service = ok ? new Worker() : new Worker(); service.run(); } computed() { const service = new Worker(); service['run'](); } inline() { new Worker().run(); } duplicateEntry() { const service = new Worker(); service.duplicate(); } missingCall() { const service = new Worker(); service.missing(); } }\n",
+        )]);
+        let graph = Index::build(&repo.0).unwrap();
+        let shadow = query::inspect(graph.graph(), "src/worker.ts::Worker.entry").unwrap();
+        assert!(shadow.contains("constructor class name could be shadowed"));
+        let nested = query::inspect(graph.graph(), "src/worker.ts::Worker.shadow").unwrap();
+        assert!(nested.contains("receiver ownership is not uniquely proven"));
+        let reassigned = query::inspect(graph.graph(), "src/worker.ts::Worker.reassigned").unwrap();
+        assert!(reassigned.contains("receiver binding was reassigned"));
+        for target in [
+            "src/worker.ts::Worker.mutable",
+            "src/worker.ts::Worker.conditional",
+            "src/worker.ts::Worker.computed",
+            "src/worker.ts::Worker.inline",
+        ] {
+            assert!(
+                query::inspect(graph.graph(), target)
+                    .unwrap()
+                    .contains("receiver or dynamic call syntax")
+            );
+        }
+        assert!(
+            query::inspect(graph.graph(), "src/worker.ts::Worker.duplicateEntry")
+                .unwrap()
+                .contains("multiple non-static methods")
+        );
+        let missing = query::inspect(graph.graph(), "src/worker.ts::Worker.missingCall").unwrap();
+        assert!(
+            missing.contains("no matching non-static method"),
+            "{missing}"
+        );
+    }
+
+    #[test]
+    fn constructor_receivers_refresh_and_persist_like_a_full_build() {
+        let repo = Repo::new(&[
+            ("src/service.ts", "export class Service { run() {} }\n"),
+            (
+                "src/use.ts",
+                "import { Service } from './service.js';\nexport function entry() { const service = new Service(); service.run(); }\n",
+            ),
+        ]);
+        let mut index = Index::build(&repo.0).unwrap();
+        repo.write("src/service.ts", "export class Service { renamed() {} }\n");
+        assert_eq!(
+            index.refresh(Path::new("src/service.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            query::inspect(index.graph(), "src/use.ts::entry")
+                .unwrap()
+                .contains("no matching non-static method")
         );
         let persistent = Index::open(&repo.0).unwrap();
         assert_equivalent(&persistent, &full);

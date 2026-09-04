@@ -108,3 +108,12 @@ uniquely names a Function or a direct relative import that uniquely exposes a
 direct callable. The public module name never changes the underlying canonical
 symbol. This is not CommonJS support, object-member resolution, default-export
 inference, wildcard closure, or multi-hop export linking.
+
+## Mission 11 boundary
+
+Inside an indexed callable, BlastRay resolves `x.method()` only when `x` has
+one preceding immutable direct `const x = new Class()` binding, the Class is a
+unique indexed local or direct relative import, and the Class has exactly one
+non-static indexed method with that name. Reassignment, shadowing, computed or
+inline receivers, conditional initializers, inheritance, and all other object
+flows remain unresolved.

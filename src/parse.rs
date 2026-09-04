@@ -27,16 +27,27 @@ pub(crate) struct SymbolDraft {
     pub default_export: bool,
     pub is_static: bool,
     pub calls: Vec<CallDraft>,
+    pub receiver_bindings: Vec<ReceiverBindingDraft>,
     pub shadowed: BTreeSet<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct CallDraft {
     pub name: String,
+    pub receiver: Option<String>,
     pub line: usize,
     pub column: usize,
     pub direct: bool,
     pub this_member: bool,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct ReceiverBindingDraft {
+    pub name: String,
+    pub class: String,
+    pub line: usize,
+    pub column: usize,
+    pub reassigned: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -245,7 +256,7 @@ fn add_variable_callables(parsed: &mut ParsedFile, node: Node<'_>, source: &str,
             continue;
         }
         let name = text(name_node, source).to_string();
-        let (calls, shadowed) = callable_body(value, source);
+        let (calls, receiver_bindings, shadowed) = callable_body(value, source);
         let position = declarator.start_position();
         let end_position = value.end_position();
         parsed.symbols.push(SymbolDraft {
@@ -260,6 +271,7 @@ fn add_variable_callables(parsed: &mut ParsedFile, node: Node<'_>, source: &str,
             default_export: false,
             is_static: false,
             calls,
+            receiver_bindings,
             shadowed,
         });
     }
@@ -276,7 +288,7 @@ fn add_function(
         return;
     };
     let canonical = format!("{}::{name}", parsed.path);
-    let (calls, shadowed) = callable_body(node, source);
+    let (calls, receiver_bindings, shadowed) = callable_body(node, source);
     let position = node.start_position();
     let end_position = node.end_position();
     parsed.symbols.push(SymbolDraft {
@@ -291,6 +303,7 @@ fn add_function(
         default_export,
         is_static: false,
         calls,
+        receiver_bindings,
         shadowed,
     });
 }
@@ -319,6 +332,7 @@ fn add_class(
         default_export,
         is_static: false,
         calls: Vec::new(),
+        receiver_bindings: Vec::new(),
         shadowed: BTreeSet::new(),
     });
 
@@ -337,7 +351,7 @@ fn add_method(parsed: &mut ParsedFile, class: &str, node: Node<'_>, source: &str
     let Some(name) = field_text(node, "name", source) else {
         return;
     };
-    let (calls, shadowed) = callable_body(node, source);
+    let (calls, receiver_bindings, shadowed) = callable_body(node, source);
     let position = node.start_position();
     let end_position = node.end_position();
     parsed.symbols.push(SymbolDraft {
@@ -352,27 +366,45 @@ fn add_method(parsed: &mut ParsedFile, class: &str, node: Node<'_>, source: &str
         default_export: false,
         is_static: is_static_method(node, source),
         calls,
+        receiver_bindings,
         shadowed,
     });
 }
 
-fn callable_body(node: Node<'_>, source: &str) -> (Vec<CallDraft>, BTreeSet<String>) {
+fn callable_body(
+    node: Node<'_>,
+    source: &str,
+) -> (Vec<CallDraft>, Vec<ReceiverBindingDraft>, BTreeSet<String>) {
     let mut shadowed = BTreeSet::new();
     if let Some(parameters) = node.child_by_field_name("parameters") {
         binding_names(parameters, source, &mut shadowed);
     }
     let Some(body) = node.child_by_field_name("body") else {
-        return (Vec::new(), shadowed);
+        return (Vec::new(), Vec::new(), shadowed);
     };
     let mut calls = Vec::new();
-    walk_body(body, source, &mut calls, &mut shadowed);
-    (calls, shadowed)
+    let mut receiver_bindings = Vec::new();
+    let mut reassigned = BTreeSet::new();
+    walk_body(
+        body,
+        source,
+        &mut calls,
+        &mut receiver_bindings,
+        &mut reassigned,
+        &mut shadowed,
+    );
+    for binding in &mut receiver_bindings {
+        binding.reassigned = reassigned.contains(&binding.name);
+    }
+    (calls, receiver_bindings, shadowed)
 }
 
 fn walk_body(
     node: Node<'_>,
     source: &str,
     calls: &mut Vec<CallDraft>,
+    receiver_bindings: &mut Vec<ReceiverBindingDraft>,
+    reassigned: &mut BTreeSet<String>,
     shadowed: &mut BTreeSet<String>,
 ) {
     match node.kind() {
@@ -387,22 +419,34 @@ fn walk_body(
             if let Some(name) = node.child_by_field_name("name") {
                 binding_names(name, source, shadowed);
             }
+            if let Some(binding) = receiver_binding(node, source) {
+                receiver_bindings.push(binding);
+            }
         }
         "call_expression" => calls.push(call_draft(node, source)),
+        "assignment_expression" => assignment_name(node, source, reassigned),
+        "update_expression" => update_name(node, source, reassigned),
         _ => {}
     }
 
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        walk_body(child, source, calls, shadowed);
+        walk_body(
+            child,
+            source,
+            calls,
+            receiver_bindings,
+            reassigned,
+            shadowed,
+        );
     }
 }
 
 fn call_draft(node: Node<'_>, source: &str) -> CallDraft {
     let function = node.child_by_field_name("function");
-    let (name, direct, this_member) = match function {
+    let (name, receiver, direct, this_member) = match function {
         Some(function) if function.kind() == "identifier" => {
-            (text(function, source).to_string(), true, false)
+            (text(function, source).to_string(), None, true, false)
         }
         Some(function) if function.kind() == "member_expression" => {
             let this_member = function
@@ -413,23 +457,71 @@ fn call_draft(node: Node<'_>, source: &str) -> CallDraft {
                     .is_some_and(|property| {
                         matches!(property.kind(), "identifier" | "property_identifier")
                     });
+            let receiver = function
+                .child_by_field_name("property")
+                .filter(|property| matches!(property.kind(), "identifier" | "property_identifier"))
+                .and_then(|_| function.child_by_field_name("object"))
+                .filter(|object| object.kind() == "identifier")
+                .map(|object| text(object, source).to_string());
             (
                 field_text(function, "property", source)
                     .unwrap_or_else(|| text(function, source).to_string()),
+                receiver,
                 false,
                 this_member,
             )
         }
-        Some(function) => (text(function, source).to_string(), false, false),
-        None => ("<unknown>".to_string(), false, false),
+        Some(function) => (text(function, source).to_string(), None, false, false),
+        None => ("<unknown>".to_string(), None, false, false),
     };
     let position = node.start_position();
     CallDraft {
         name,
+        receiver,
         line: position.row + 1,
         column: position.column + 1,
         direct,
         this_member,
+    }
+}
+
+fn receiver_binding(node: Node<'_>, source: &str) -> Option<ReceiverBindingDraft> {
+    let name = node.child_by_field_name("name")?;
+    let value = node.child_by_field_name("value")?;
+    if name.kind() != "identifier" || value.kind() != "new_expression" {
+        return None;
+    }
+    let constructor = value.child_by_field_name("constructor")?;
+    if constructor.kind() != "identifier" {
+        return None;
+    }
+    let declaration = node.parent()?;
+    if !text(declaration, source).trim_start().starts_with("const ") {
+        return None;
+    }
+    let position = node.start_position();
+    Some(ReceiverBindingDraft {
+        name: text(name, source).to_string(),
+        class: text(constructor, source).to_string(),
+        line: position.row + 1,
+        column: position.column + 1,
+        reassigned: false,
+    })
+}
+
+fn assignment_name(node: Node<'_>, source: &str, reassigned: &mut BTreeSet<String>) {
+    if let Some(left) = node.child_by_field_name("left")
+        && left.kind() == "identifier"
+    {
+        reassigned.insert(text(left, source).to_string());
+    }
+}
+
+fn update_name(node: Node<'_>, source: &str, reassigned: &mut BTreeSet<String>) {
+    if let Some(argument) = node.child_by_field_name("argument")
+        && argument.kind() == "identifier"
+    {
+        reassigned.insert(text(argument, source).to_string());
     }
 }
 

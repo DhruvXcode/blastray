@@ -91,3 +91,12 @@ import binding can expose that public name; the exported name maps to the
 underlying canonical Function rather than a synthetic barrel symbol. Missing,
 non-callable, type-only, ambiguous, indirect, and unresolved source bindings
 remain unresolved or ambiguous. Cache schema 6 invalidates prior parsed facts.
+
+## Mission 11 constructor-bound receivers
+
+Callable parse artifacts retain only immutable direct constructor bindings:
+`const local = new Class()`. A direct non-computed `local.method()` can use that
+fact to target the existing non-static Method canonical symbol, with ordinary
+CALLS evidence and adjacency. The facts are scoped to the containing callable;
+reassigned or competing bindings do not resolve. Cache schema 7 invalidates
+prior parsed artifacts.

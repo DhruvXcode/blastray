@@ -207,6 +207,14 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
         "src/local-export-use.ts",
         "import { publicForwarded } from './local-export-barrel.js';\nexport function localExportEntry() { publicForwarded(); }\n",
     );
+    repo.write(
+        "src/constructor-service.ts",
+        "export class Service { run() {} }\n",
+    );
+    repo.write(
+        "src/constructor-use.ts",
+        "import { Service } from './constructor-service.js';\nexport function constructorEntry() { const service = new Service(); service.run(); }\n",
+    );
     let mut mcp = Mcp::start(&repo);
 
     let list = mcp.request("tools/list", json!({}));
@@ -230,6 +238,16 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
         text(&mcp.call(
             "trace",
             json!({"from": "src/b.ts::entry", "to": "src/a.ts::leaf"})
+        ))
+        .contains("Known CALLS path")
+    );
+    assert!(
+        text(&mcp.call(
+            "trace",
+            json!({
+                "from": "src/constructor-use.ts::constructorEntry",
+                "to": "src/constructor-service.ts::Service.run"
+            })
         ))
         .contains("Known CALLS path")
     );
@@ -272,6 +290,18 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
             json!({"target": "src/reexport-use.ts::reexportEntry"})
         ))
         .contains("Direct callees: none")
+    );
+
+    repo.write(
+        "src/constructor-service.ts",
+        "export class Service { renamed() {} }\n",
+    );
+    assert!(
+        text(&mcp.call(
+            "inspect",
+            json!({"target": "src/constructor-use.ts::constructorEntry"})
+        ))
+        .contains("no matching non-static method")
     );
 
     repo.write(

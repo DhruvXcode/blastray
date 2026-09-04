@@ -14,7 +14,7 @@ It will provide four primitives:
 
 ## Status
 
-Mission 10 provides a deterministic TypeScript/JavaScript slice for `.ts`,
+Mission 11 provides a deterministic TypeScript/JavaScript slice for `.ts`,
 `.tsx`, `.js`, and `.jsx` files, with a persistent local index and
 `impact --diff` for staged plus unstaged Git changes. It indexes named
 top-level functions, callable top-level `const` bindings, classes, and class
@@ -26,6 +26,8 @@ Relative one-hop named re-exports, including aliases, resolve only when they
 uniquely expose an already indexed callable; calls retain the declaration's
 original canonical identity. Explicit local export lists can also forward one
 uniquely resolved direct relative callable import without changing that identity.
+An immutable local `const x = new Class()` can call a uniquely resolved
+non-static method on that indexed local or relative-imported Class.
 
 The same four primitives are available to MCP-capable coding agents through
 the stdio server: `blastray mcp`.

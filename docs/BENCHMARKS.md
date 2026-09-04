@@ -373,3 +373,50 @@ Reverse importer closure took 89 us for the no-importer path (size 1) and
 1,556 us for `src/storage/repo-meta.ts` (size 245), so Mission 10 leaves the
 simple scan unchanged. These are single-run environment measurements, not
 public performance claims.
+
+## Mission 11 receiver ownership and constructor-bound calls
+
+A release-mode Tree-sitter census joined every remaining unresolved direct
+non-computed member call to its nearest indexed callable and lexical receiver
+binding. The probe was removed after measurement. The initial 28,645 call-site
+classification found 45 same-file and 280 direct-relative-import constructor
+sites: 325 sites over 144 receiver bindings. Of those, 311 had a unique
+non-static Class method candidate (222 source/target pairs), enough to select
+the narrow immutable-constructor slice.
+
+| remaining receiver category after the slice | call sites |
+| --- | ---: |
+| parameter or local-shadowed receiver | 4,933 |
+| same-file local value | 4,670 |
+| unresolved/global receiver | 4,017 |
+| other dynamic receiver | 3,641 |
+| local explicit type annotation | 2,727 |
+| function-return/chained receiver | 2,248 |
+| relative imported object/value | 2,198 |
+| class field or `this` property | 1,549 |
+| package/external receiver | 323 |
+| object literal | 9 |
+| mutable/reassigned or unindexed constructor | 4 |
+
+Build release mode and use the same disposable-copy command as Mission 10.
+The post-change run measured 302 resolved constructor call sites and 221 new
+deduplicated CALLS edges; nine syntactically promising sites stayed unresolved
+because the production model rejects competing lexical bindings.
+
+| metric | Mission 10 | Mission 11 |
+| --- | ---: | ---: |
+| source files | 2,430 | 2,430 |
+| symbols | 9,376 | 9,376 |
+| resolved IMPORTS | 5,914 | 5,914 |
+| resolved CALLS | 9,788 | 10,009 |
+| unresolved issues | 47,729 | 47,427 |
+| ambiguous issues | 1 | 1 |
+| cache size | 16,889,808 bytes | 17,353,479 bytes |
+| full build | 7.181 s | 6.805 s |
+| cold `find analyze` | 3.960 s | 4.100 s |
+| warm `find analyze` | 0.290 s | 0.290 s |
+
+Examples include `startWatchFileLoop` creating `WatchRefreshQueue` before
+calling `runInitial`, `evalServerCommand` creating `LocalBackend` before
+`init`, and `wikiCommandImpl` creating `WikiGenerator` before `run`. These are
+single-run environment measurements, not public performance claims.
