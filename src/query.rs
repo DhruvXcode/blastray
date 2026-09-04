@@ -97,7 +97,7 @@ fn find_match<'a>(
     if canonical == query.to_lowercase() {
         return Some(FindMatch {
             symbol,
-            score: 1_000,
+            score: 10_000,
             matched_tokens: query_tokens.len(),
             reason: "exact identity",
         });
@@ -105,7 +105,7 @@ fn find_match<'a>(
     if symbol.name == query {
         return Some(FindMatch {
             symbol,
-            score: 900,
+            score: 9_000,
             matched_tokens: query_tokens.len(),
             reason: "exact name",
         });
@@ -113,7 +113,7 @@ fn find_match<'a>(
     if name == query.to_lowercase() {
         return Some(FindMatch {
             symbol,
-            score: 850,
+            score: 8_500,
             matched_tokens: query_tokens.len(),
             reason: "exact name",
         });

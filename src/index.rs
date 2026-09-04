@@ -1540,6 +1540,11 @@ mod tests {
     fn ranked_find_is_deterministic_multi_word_and_capped() {
         let mut files = vec![
             ("src/exact.ts", "export function Analyze() {}\n"),
+            ("src/lock.ts", "export function acquireIndexLock() {}\n"),
+            (
+                "src/watch-lock.ts",
+                "export function acquireWatchLock() {}\n",
+            ),
             (
                 "src/incremental-index.ts",
                 "export function rebuildIncrementalIndex() {}\n",
@@ -1562,6 +1567,15 @@ mod tests {
         assert!(
             exact.find("src/exact.ts::Analyze").unwrap()
                 < exact.find("src/analyze-0.ts::analyze0").unwrap()
+        );
+        let exact_multi_token = query::find(index.graph(), "acquireIndexLock");
+        assert!(
+            exact_multi_token
+                .find("src/lock.ts::acquireIndexLock")
+                .unwrap()
+                < exact_multi_token
+                    .find("src/watch-lock.ts::acquireWatchLock")
+                    .unwrap()
         );
         let multi_word = query::find(index.graph(), "incremental index");
         assert!(multi_word.contains("src/incremental-index.ts::rebuildIncrementalIndex"));
