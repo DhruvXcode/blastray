@@ -65,3 +65,11 @@ resolved CALLS facts retain one or more one-based call-site line/column pairs.
 The materialized graph still has one edge per source/target pair, with sorted
 forward/reverse adjacency and separate evidence lookup. Cache schema 3
 invalidates pre-evidence persisted facts.
+
+## Mission 7 same-class `this` calls
+
+Parsed methods retain whether they are static, and parsed call facts distinguish
+a direct non-computed `this.member()` from other member calls. Resolution uses a
+temporary per-build map keyed by file, class, member name, and staticness. One
+unique matching method becomes a CALLS edge; no match is unresolved and more
+than one is ambiguous. Cache schema 4 invalidates pre-`this` persisted facts.

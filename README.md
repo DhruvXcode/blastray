@@ -20,7 +20,8 @@ Mission 6 provides a deterministic TypeScript/JavaScript slice for `.ts`,
 top-level functions, callable top-level `const` bindings, classes, and class
 methods; resolves only confirmed local or relative-imported function calls; and
 reports uncertainty instead of guessing. `find` is compact ranked lexical
-search, not semantic search.
+search, not semantic search. Direct `this.method()` calls resolve only to a
+uniquely matching method on the same indexed class.
 
 The same four primitives are available to MCP-capable coding agents through
 the stdio server: `blastray mcp`.

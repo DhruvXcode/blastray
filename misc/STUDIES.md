@@ -94,3 +94,14 @@
   Reference: `gitnexus/src/core/run-analyze.ts`,
   `gitnexus/src/storage/index-lock.ts`,
   `gitnexus/src/core/search/fts-indexes.ts`.
+
+## Mission 7 addition
+
+- Finding: the GitNexus unresolved census found 2,056 direct `this` member
+  calls, of which 1,873 had a unique same-class indexed method candidate; only
+  two unresolved calls used a relative namespace import.
+  Why it matters: same-class `this.method()` provides high-value deterministic
+  graph coverage without object/type inference, while namespace support would
+  add complexity for little observed benefit.
+  Reference: census over `gitnexus` commit `932d937085e14664f4ef97b06506bf01034497ab`;
+  representative `gitnexus/src/cli/watch-queue.ts`.

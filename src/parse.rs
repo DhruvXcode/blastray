@@ -23,6 +23,7 @@ pub(crate) struct SymbolDraft {
     pub kind: SymbolKind,
     pub exported: bool,
     pub default_export: bool,
+    pub is_static: bool,
     pub calls: Vec<CallDraft>,
     pub shadowed: BTreeSet<String>,
 }
@@ -33,6 +34,7 @@ pub(crate) struct CallDraft {
     pub line: usize,
     pub column: usize,
     pub direct: bool,
+    pub this_member: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -150,6 +152,7 @@ fn add_variable_callables(parsed: &mut ParsedFile, node: Node<'_>, source: &str,
             kind: SymbolKind::Function,
             exported,
             default_export: false,
+            is_static: false,
             calls,
             shadowed,
         });
@@ -180,6 +183,7 @@ fn add_function(
         kind: SymbolKind::Function,
         exported,
         default_export,
+        is_static: false,
         calls,
         shadowed,
     });
@@ -207,6 +211,7 @@ fn add_class(
         kind: SymbolKind::Class,
         exported,
         default_export,
+        is_static: false,
         calls: Vec::new(),
         shadowed: BTreeSet::new(),
     });
@@ -239,6 +244,7 @@ fn add_method(parsed: &mut ParsedFile, class: &str, node: Node<'_>, source: &str
         kind: SymbolKind::Method,
         exported: false,
         default_export: false,
+        is_static: is_static_method(node, source),
         calls,
         shadowed,
     });
@@ -288,17 +294,28 @@ fn walk_body(
 
 fn call_draft(node: Node<'_>, source: &str) -> CallDraft {
     let function = node.child_by_field_name("function");
-    let (name, direct) = match function {
+    let (name, direct, this_member) = match function {
         Some(function) if function.kind() == "identifier" => {
-            (text(function, source).to_string(), true)
+            (text(function, source).to_string(), true, false)
         }
-        Some(function) if function.kind() == "member_expression" => (
-            field_text(function, "property", source)
-                .unwrap_or_else(|| text(function, source).to_string()),
-            false,
-        ),
-        Some(function) => (text(function, source).to_string(), false),
-        None => ("<unknown>".to_string(), false),
+        Some(function) if function.kind() == "member_expression" => {
+            let this_member = function
+                .child_by_field_name("object")
+                .is_some_and(|object| object.kind() == "this")
+                && function
+                    .child_by_field_name("property")
+                    .is_some_and(|property| {
+                        matches!(property.kind(), "identifier" | "property_identifier")
+                    });
+            (
+                field_text(function, "property", source)
+                    .unwrap_or_else(|| text(function, source).to_string()),
+                false,
+                this_member,
+            )
+        }
+        Some(function) => (text(function, source).to_string(), false, false),
+        None => ("<unknown>".to_string(), false, false),
     };
     let position = node.start_position();
     CallDraft {
@@ -306,7 +323,16 @@ fn call_draft(node: Node<'_>, source: &str) -> CallDraft {
         line: position.row + 1,
         column: position.column + 1,
         direct,
+        this_member,
     }
+}
+
+fn is_static_method(node: Node<'_>, source: &str) -> bool {
+    let Some(name) = node.child_by_field_name("name") else {
+        return false;
+    };
+    let prefix = &source[node.start_byte()..name.start_byte()];
+    prefix.split_whitespace().any(|word| word == "static")
 }
 
 fn binding_names(node: Node<'_>, source: &str, names: &mut BTreeSet<String>) {

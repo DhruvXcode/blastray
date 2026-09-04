@@ -83,3 +83,10 @@ plain top-level identifier bindings whose initializer is an arrow function or
 function expression. `find` remains deterministic lexical ranking with a small
 display cap, and resolved CALLS retain call-site locations for existing
 `inspect`, `trace`, and direct `impact` evidence.
+
+## Mission 7 boundary
+
+Inside an indexed direct class method, BlastRay resolves a non-computed
+`this.method()` only when the same class defines exactly one method with that
+name and matching staticness. It does not infer inheritance, external objects,
+computed properties, chained receivers, or aliases of `this`.

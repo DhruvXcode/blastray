@@ -182,6 +182,10 @@ fn meaning(graph: &Graph) -> String {
 #[test]
 fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
     let repo = Repo::new();
+    repo.write(
+        "src/worker.ts",
+        "export class Worker { leaf() {} entry() { this.leaf(); } }\n",
+    );
     let mut mcp = Mcp::start(&repo);
 
     let list = mcp.request("tools/list", json!({}));
@@ -210,6 +214,26 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
     );
     assert!(
         text(&mcp.call("impact", json!({"target": "src/a.ts::leaf"}))).contains("src/b.ts::entry")
+    );
+    let worker_response = mcp.call("inspect", json!({"target": "src/worker.ts::Worker.entry"}));
+    let worker = text(&worker_response);
+    assert!(worker.contains("src/worker.ts::Worker.leaf"));
+    assert!(worker.contains("call at src/worker.ts:1:"));
+
+    repo.write(
+        "src/worker.ts",
+        "export class Worker { leaf() {} next() {} entry() { this.next(); } }\n",
+    );
+    assert!(text(&mcp.call("find", json!({"query": "next"}))).contains("Worker.next"));
+    assert!(
+        text(&mcp.call(
+            "trace",
+            json!({
+                "from": "src/worker.ts::Worker.entry",
+                "to": "src/worker.ts::Worker.next"
+            })
+        ))
+        .contains("Known CALLS path")
     );
 
     repo.write(

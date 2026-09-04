@@ -20,7 +20,7 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 3;
+const CACHE_SCHEMA: u32 = 4;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SymbolKind {
@@ -533,6 +533,7 @@ struct ResolveContext {
     files: BTreeSet<String>,
     canonical_symbols: BTreeMap<String, Vec<String>>,
     local_functions: BTreeMap<(String, String), Vec<String>>,
+    this_methods: BTreeMap<(String, String, String, bool), Vec<String>>,
     exports: BTreeMap<(String, String, bool), Vec<String>>,
 }
 
@@ -542,6 +543,7 @@ impl ResolveContext {
             files: parsed.keys().cloned().collect(),
             canonical_symbols: BTreeMap::new(),
             local_functions: BTreeMap::new(),
+            this_methods: BTreeMap::new(),
             exports: BTreeMap::new(),
         };
         for file in parsed.values() {
@@ -564,6 +566,20 @@ impl ResolveContext {
                             .or_default()
                             .push(symbol.canonical.clone());
                     }
+                }
+                if symbol.kind == SymbolKind::Method
+                    && let Some((class, _)) = method_owner(&symbol.canonical)
+                {
+                    context
+                        .this_methods
+                        .entry((
+                            file.path.clone(),
+                            class.to_string(),
+                            symbol.name.clone(),
+                            symbol.is_static,
+                        ))
+                        .or_default()
+                        .push(symbol.canonical.clone());
                 }
                 if symbol.default_export {
                     context
@@ -600,6 +616,10 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> FileResolution {
             continue;
         }
         for call in &draft.calls {
+            if call.this_member {
+                resolve_this_member_call(draft, file, call, context, &mut result);
+                continue;
+            }
             if !call.direct {
                 result.issues.push(issue(
                     RelationshipStatus::Unresolved,
@@ -669,6 +689,65 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> FileResolution {
     result.calls.dedup();
     result.issues.sort_by(issue_order);
     result
+}
+
+fn resolve_this_member_call(
+    draft: &SymbolDraft,
+    file: &ParsedFile,
+    call: &crate::parse::CallDraft,
+    context: &ResolveContext,
+    result: &mut FileResolution,
+) {
+    let Some((class, _)) = method_owner(&draft.canonical) else {
+        result.issues.push(issue(
+            RelationshipStatus::Unresolved,
+            &draft.canonical,
+            call.line,
+            call.column,
+            &call.name,
+            "this member call is outside an indexed direct class method",
+        ));
+        return;
+    };
+    let candidates = context
+        .this_methods
+        .get(&(
+            file.path.clone(),
+            class.to_string(),
+            call.name.clone(),
+            draft.is_static,
+        ))
+        .cloned()
+        .unwrap_or_default();
+    match candidates.as_slice() {
+        [target] => result.calls.push(ResolvedCall {
+            from: draft.canonical.clone(),
+            to: target.clone(),
+            line: call.line,
+            column: call.column,
+        }),
+        [] => result.issues.push(issue(
+            RelationshipStatus::Unresolved,
+            &draft.canonical,
+            call.line,
+            call.column,
+            &call.name,
+            "no matching same-class method",
+        )),
+        _ => result.issues.push(issue(
+            RelationshipStatus::Ambiguous,
+            &draft.canonical,
+            call.line,
+            call.column,
+            &call.name,
+            "multiple same-class methods match this member call",
+        )),
+    }
+}
+
+fn method_owner(canonical: &str) -> Option<(&str, &str)> {
+    let (_, member) = canonical.rsplit_once("::")?;
+    member.rsplit_once('.')
 }
 
 fn resolve_import(
@@ -1599,6 +1678,75 @@ mod tests {
         let impact = query::impact(index.graph(), "leaf").unwrap();
         assert!(impact.contains("Direct caller evidence:"));
         assert!(impact.contains("src/a.ts::middle [calls at src/a.ts:2:28, src/a.ts:2:36]"));
+    }
+
+    #[test]
+    fn same_class_this_calls_resolve_without_receiver_inference() {
+        let repo = Repo::new(&[(
+            "src/worker.ts",
+            "export class Worker {\n  leaf() {}\n  entry() { this.leaf(); this.leaf(); }\n  static staticLeaf() {}\n  static staticEntry() { this.staticLeaf(); }\n}\n",
+        )]);
+        let index = Index::build(&repo.0).unwrap();
+        let graph = index.graph();
+        assert_eq!(graph.calls.len(), 2);
+        let entry = graph.symbol_candidates("src/worker.ts::Worker.entry")[0];
+        let leaf = graph.symbol_candidates("src/worker.ts::Worker.leaf")[0];
+        assert_eq!(graph.call_sites(entry, leaf).len(), 2);
+        assert!(
+            query::trace(
+                graph,
+                "src/worker.ts::Worker.entry",
+                "src/worker.ts::Worker.leaf"
+            )
+            .unwrap()
+            .contains("calls at src/worker.ts:3:13, src/worker.ts:3:26")
+        );
+        assert!(
+            query::trace(
+                graph,
+                "src/worker.ts::Worker.staticEntry",
+                "src/worker.ts::Worker.staticLeaf"
+            )
+            .unwrap()
+            .contains("Known CALLS path")
+        );
+    }
+
+    #[test]
+    fn this_calls_remain_conservative_for_missing_ambiguous_and_similar_syntax() {
+        let repo = Repo::new(&[(
+            "src/worker.ts",
+            "export class Worker {\n  leaf() {}\n  static staticLeaf() {}\n  value = 1;\n  entry() { const leaf = () => {}; const self = this; this.leaf(); this.missing(); this.value(); this.staticLeaf(); this['leaf'](); self.leaf(); service.leaf(); }\n  static staticEntry() { this.leaf(); }\n}\nexport class Duplicate { foo() {} foo() {} entry() { this.foo(); } }\n",
+        )]);
+        let index = Index::build(&repo.0).unwrap();
+        let entry = query::inspect(index.graph(), "src/worker.ts::Worker.entry").unwrap();
+        assert!(entry.contains("src/worker.ts::Worker.leaf"));
+        assert!(entry.contains("no matching same-class method"));
+        assert!(entry.contains("receiver or dynamic call syntax"));
+        let duplicate = query::inspect(index.graph(), "src/worker.ts::Duplicate.entry").unwrap();
+        assert!(duplicate.contains("AMBIGUOUS"));
+        assert!(duplicate.contains("multiple same-class methods"));
+    }
+
+    #[test]
+    fn this_calls_refresh_and_persist_like_a_full_build() {
+        let repo = Repo::new(&[(
+            "src/worker.ts",
+            "export class Worker { leaf() {} entry() { this.leaf(); } }\n",
+        )]);
+        let mut index = Index::build(&repo.0).unwrap();
+        repo.write(
+            "src/worker.ts",
+            "export class Worker { leaf() {} next() {} entry() { this.leaf(); this.next(); } }\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("src/worker.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        let persistent = Index::open(&repo.0).unwrap();
+        assert_equivalent(&persistent, &full);
     }
 
     #[test]

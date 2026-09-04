@@ -180,3 +180,57 @@ A read-only Mission 6 MCP pass resolved and traced all three previously missing
 direct calls from `runFullAnalysis`: `acquireIndexLock`,
 `initialiseSearchFTSStemmer`, and `resetDegradedParseCounter`. These are
 single-run environment-specific measurements, not public performance claims.
+
+## Mission 7 unresolved census and same-class `this` calls
+
+The Mission 6 release binary built the pinned GitNexus source set (2,430 files)
+and a temporary in-crate census grouped every unresolved issue by exact detail,
+context, and source-token receiver shape. The temporary census code was removed
+after measurement. Counts below are issue/call-site counts, not unique edges.
+
+| unresolved context | count | share |
+| --- | ---: | ---: |
+| receiver/member | 30,866 | 61.66% |
+| imported binding | 13,306 | 26.58% |
+| import/module | 3,782 | 7.55% |
+| shadowing | 1,086 | 2.17% |
+| direct identifier | 919 | 1.84% |
+| other (namespace-import diagnostic) | 99 | 0.20% |
+
+The receiver census found 21,018 local/imported-object receivers, 4,486
+chained/dynamic receivers, 2,571 class/static-looking receivers, 2,056 `this`
+members, 644 computed/dynamic receivers, 89 non-relative namespace members,
+and 2 relative namespace members. Of the `this` calls, 1,873 had a unique
+same-class indexed method candidate and 183 had none. This made same-class
+`this.method()` the selected deterministic slice; package/import categories and
+general receiver shapes require unsupported resolution machinery.
+
+Build release mode and use a disposable reference copy to reproduce the
+post-change measurement:
+
+```text
+cargo build --release
+benchmark_dir=$(mktemp -d /tmp/blastray-mission7-XXXXXX)
+cp -a misc/references/gitnexus/gitnexus/. "$benchmark_dir"
+(cd "$benchmark_dir" && TIMEFORMAT='cold=%3R seconds'; time /workspaces/blastray/target/release/blastray find analyze)
+(cd "$benchmark_dir" && TIMEFORMAT='warm=%3R seconds'; time /workspaces/blastray/target/release/blastray find analyze)
+wc -c < "$benchmark_dir/.blastray/index.bin"
+```
+
+| metric | Mission 6 | Mission 7 |
+| --- | ---: | ---: |
+| source files | 2,430 | 2,430 |
+| symbols | 9,376 | 9,376 |
+| resolved IMPORTS | 5,739 | 5,739 |
+| resolved CALLS edges | 8,284 | 9,738 |
+| unresolved issues | 50,058 | 48,187 |
+| ambiguous issues | 1 | 1 |
+| cache size | 16,680,879 bytes | 16,698,099 bytes |
+| cold `find analyze` | 4.451 s | 4.088 s |
+| warm `find analyze` | 0.279 s | 0.274 s |
+
+The chosen category changed from 2,056 unresolved `this` receiver call sites
+to 1,871 resolved, 169 explicitly missing same-class methods, and 16 remaining
+unsupported dynamic/private forms. A warm live-MCP `find("watch queue")` took
+0.115 s in one release-mode run. These are environment-specific measurements,
+not public performance claims.
