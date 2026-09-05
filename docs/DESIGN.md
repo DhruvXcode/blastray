@@ -166,10 +166,14 @@ invalidates caches before the Go parsed artifact and provider-context facts.
 Java is the fifth compiled provider. It extracts declared packages, top-level
 classes, interfaces/enums as `Type`, and direct methods with source spans.
 Only uniquely proven local-package or explicit repository-local imports become
-file dependencies. CALLS are limited to a unique direct or `this` method in the
-declaring type, or a unique indexed class's simple static method. Local and
-parameter shadowing, overloads, arbitrary receivers, inheritance/interface
-dispatch, wildcard imports, reflection, lambdas, method references, and all
-classpath/framework semantics remain unresolved. Java parsing is native only;
+file dependencies. CALLS require exact non-varargs syntactic arity and are
+limited to hierarchy-free owners, except that a unique own zero-argument
+direct/`this` method is safe across a hierarchy: a unique direct or `this`
+method in the declaring type, or a unique indexed class's simple static method. Local,
+parameter, and member-field shadowing, overload/type selection uncertainty,
+inheritance/interface dispatch, wildcard imports, reflection, lambdas, method
+references, and all classpath/framework semantics remain unresolved. Overloads
+use a normalized syntactic parameter signature in their canonical selector;
+non-overloaded methods keep the concise selector. Java parsing is native only;
 no JVM/JDK, build tool, compiler, LSP, or dependency manager is invoked.
-Schema 12 invalidates pre-Java parsed artifacts.
+Schema 13 invalidates pre-hardened Java parsed artifacts.

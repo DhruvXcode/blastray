@@ -19,7 +19,7 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 12;
+const CACHE_SCHEMA: u32 = 13;
 
 pub fn no_supported_source_files_message() -> String {
     language::no_supported_source_files_message()
@@ -2001,6 +2001,32 @@ mod tests {
                 )
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn java_overload_signatures_are_individually_queryable() {
+        let repo = Repo::new(&[(
+            "Worker.java",
+            "class Worker { void f() {} void f(int value) {} void g() { f(); f(1); } }\n",
+        )]);
+        let index = Index::build(&repo.0).unwrap();
+        let graph = index.graph();
+        let empty = "Worker.java::Worker.f()";
+        let integer = "Worker.java::Worker.f(int)";
+        assert_eq!(graph.symbol_candidates(empty).len(), 1);
+        assert_eq!(graph.symbol_candidates(integer).len(), 1);
+        assert!(query::inspect(graph, empty).unwrap().contains(empty));
+        assert!(query::inspect(graph, integer).unwrap().contains(integer));
+        assert!(
+            query::trace(graph, "Worker.java::Worker.g", empty)
+                .unwrap()
+                .contains("Known CALLS path")
+        );
+        assert!(
+            query::trace(graph, "Worker.java::Worker.g", integer)
+                .unwrap()
+                .contains("Known CALLS path")
         );
     }
 

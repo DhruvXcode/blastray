@@ -149,10 +149,15 @@ pre-Go provider/context state.
 
 Java parsed artifacts retain declared package names, non-wildcard imports,
 top-level classes plus interfaces/enums as `Type`, direct methods, modifiers
-needed for static proof, callable shadow facts, and call sites. A repository
-import is an IMPORTS edge only for one indexed type with the exact package and
-name. CALLS require one same-owner direct/`this` method, one direct static
-import, or one locally/importedly named Class and one static target method.
-Overloaded candidates, local shadowing, non-Class type receivers, arbitrary
-objects, inheritance, interfaces, and external/wildcard imports yield issues
-instead of edges. Cache schema 12 invalidates pre-Java artifacts.
+needed for static proof, normalized parameter signatures, callable/member-field
+shadow facts, and call sites. A repository import is an IMPORTS edge only for
+one indexed type with the exact package and name. CALLS require one non-varargs
+same-owner direct/`this` method with exact syntactic arity (only zero-argument
+own methods cross a hierarchy), one direct static import, or one
+locally/importedly named hierarchy-free Class and one static
+target method with that arity. An overloaded declaration uses
+`path::Class.method(type,...)`; a non-overloaded declaration retains
+`path::Class.method`. Overload type selection, local/member shadowing, non-Class
+type receivers, arbitrary objects, inheritance, interfaces, and
+external/wildcard imports yield issues instead of edges. Cache schema 13
+invalidates pre-hardened Java artifacts.

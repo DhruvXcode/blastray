@@ -32,6 +32,10 @@ pub(crate) struct SymbolDraft {
     shadowed: BTreeSet<String>,
     owner: Option<String>,
     is_static: bool,
+    signature: Option<String>,
+    arity: usize,
+    is_varargs: bool,
+    owner_has_hierarchy: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -47,6 +51,7 @@ struct CallDraft {
     kind: CallKind,
     name: String,
     receiver: Option<String>,
+    arity: usize,
     line: usize,
     column: usize,
 }
@@ -64,6 +69,7 @@ struct TypeTarget {
     canonical: String,
     file: String,
     is_class: bool,
+    has_hierarchy: bool,
 }
 
 pub(crate) fn supports_path(path: &Path) -> bool {
@@ -143,6 +149,7 @@ fn add_type(parsed: &mut ParsedFile, node: Node<'_>, source: &str, kind: SymbolK
     };
     let position = node.start_position();
     let canonical = format!("{}::{name}", parsed.path);
+    let type_has_hierarchy = has_hierarchy(node);
     parsed.symbols.push(SymbolDraft {
         canonical: canonical.clone(),
         name,
@@ -155,34 +162,75 @@ fn add_type(parsed: &mut ParsedFile, node: Node<'_>, source: &str, kind: SymbolK
         shadowed: BTreeSet::new(),
         owner: None,
         is_static: false,
+        signature: None,
+        arity: 0,
+        is_varargs: false,
+        owner_has_hierarchy: type_has_hierarchy,
     });
     let Some(body) = node.child_by_field_name("body") else {
         return;
     };
-    add_direct_methods(parsed, body, source, &canonical);
+    let field_shadowed = direct_field_bindings(body, source);
+    add_direct_methods(
+        parsed,
+        body,
+        source,
+        &canonical,
+        &field_shadowed,
+        type_has_hierarchy,
+    );
+    normalize_method_canonicals(parsed, &canonical);
 }
 
-fn add_direct_methods(parsed: &mut ParsedFile, body: Node<'_>, source: &str, owner: &str) {
+fn add_direct_methods(
+    parsed: &mut ParsedFile,
+    body: Node<'_>,
+    source: &str,
+    owner: &str,
+    field_shadowed: &BTreeSet<String>,
+    owner_has_hierarchy: bool,
+) {
     let mut cursor = body.walk();
     for child in body.named_children(&mut cursor) {
         if child.kind() == "method_declaration" {
-            add_method(parsed, child, source, owner);
+            add_method(
+                parsed,
+                child,
+                source,
+                owner,
+                field_shadowed,
+                owner_has_hierarchy,
+            );
         } else if body.kind() == "enum_body" && child.kind() == "enum_body_declarations" {
             let mut declarations = child.walk();
             for declaration in child.named_children(&mut declarations) {
                 if declaration.kind() == "method_declaration" {
-                    add_method(parsed, declaration, source, owner);
+                    add_method(
+                        parsed,
+                        declaration,
+                        source,
+                        owner,
+                        field_shadowed,
+                        owner_has_hierarchy,
+                    );
                 }
             }
         }
     }
 }
 
-fn add_method(parsed: &mut ParsedFile, node: Node<'_>, source: &str, owner: &str) {
+fn add_method(
+    parsed: &mut ParsedFile,
+    node: Node<'_>,
+    source: &str,
+    owner: &str,
+    field_shadowed: &BTreeSet<String>,
+    owner_has_hierarchy: bool,
+) {
     let Some(name) = field_text(node, "name", source) else {
         return;
     };
-    let mut shadowed = BTreeSet::new();
+    let mut shadowed = field_shadowed.clone();
     if let Some(parameters) = node.child_by_field_name("parameters") {
         binding_names(parameters, source, &mut shadowed);
     }
@@ -191,6 +239,7 @@ fn add_method(parsed: &mut ParsedFile, node: Node<'_>, source: &str, owner: &str
         collect_body_facts(body, source, &mut shadowed, &mut calls);
     }
     let position = node.start_position();
+    let (signature, arity, is_varargs) = method_signature(node, source);
     parsed.symbols.push(SymbolDraft {
         canonical: format!("{owner}.{name}"),
         name,
@@ -203,7 +252,107 @@ fn add_method(parsed: &mut ParsedFile, node: Node<'_>, source: &str, owner: &str
         shadowed,
         owner: Some(owner.to_owned()),
         is_static: has_static_modifier(node, source),
+        signature: Some(signature),
+        arity,
+        is_varargs,
+        owner_has_hierarchy,
     });
+}
+
+fn has_hierarchy(node: Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor).any(|child| {
+        matches!(
+            child.kind(),
+            "superclass" | "super_interfaces" | "extends_interfaces"
+        )
+    })
+}
+
+fn direct_field_bindings(body: Node<'_>, source: &str) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let mut cursor = body.walk();
+    for child in body.named_children(&mut cursor) {
+        if child.kind() == "field_declaration" {
+            binding_names(child, source, &mut names);
+        } else if child.kind() == "enum_constant" {
+            if let Some(name) = field_text(child, "name", source) {
+                names.insert(name);
+            }
+        } else if body.kind() == "enum_body" && child.kind() == "enum_body_declarations" {
+            let mut declarations = child.walk();
+            for declaration in child.named_children(&mut declarations) {
+                if declaration.kind() == "field_declaration" {
+                    binding_names(declaration, source, &mut names);
+                }
+            }
+        }
+    }
+    names
+}
+
+fn normalize_method_canonicals(parsed: &mut ParsedFile, owner: &str) {
+    let mut counts = BTreeMap::new();
+    for symbol in &parsed.symbols {
+        if symbol.owner.as_deref() == Some(owner) {
+            *counts.entry(symbol.name.clone()).or_insert(0usize) += 1;
+        }
+    }
+    for symbol in &mut parsed.symbols {
+        if symbol.owner.as_deref() == Some(owner) && counts[&symbol.name] > 1 {
+            let signature = symbol.signature.as_deref().unwrap_or_default();
+            symbol.canonical = format!("{owner}.{}({signature})", symbol.name);
+        }
+    }
+}
+
+fn method_signature(node: Node<'_>, source: &str) -> (String, usize, bool) {
+    let Some(parameters) = node.child_by_field_name("parameters") else {
+        return (String::new(), 0, false);
+    };
+    let mut parts = Vec::new();
+    let mut varargs = false;
+    let mut cursor = parameters.walk();
+    for parameter in parameters.named_children(&mut cursor) {
+        if parameter.kind() == "receiver_parameter" {
+            continue;
+        }
+        if !matches!(parameter.kind(), "formal_parameter" | "spread_parameter") {
+            continue;
+        }
+        let mut part = parameter_type(parameter, source).unwrap_or_default();
+        if parameter.kind() == "spread_parameter" {
+            part.push_str("...");
+            varargs = true;
+        }
+        parts.push(part);
+    }
+    (parts.join(","), parts.len(), varargs)
+}
+
+fn parameter_type(node: Node<'_>, source: &str) -> Option<String> {
+    let type_node = node.child_by_field_name("type").or_else(|| {
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor).find(|child| {
+            child.kind().ends_with("_type")
+                || matches!(
+                    child.kind(),
+                    "type_identifier" | "generic_type" | "array_type" | "scoped_type_identifier"
+                )
+        })
+    })?;
+    let mut value = normalized_text(type_node, source);
+    if let Some(dimensions) = node.child_by_field_name("dimensions") {
+        value.push_str(&normalized_text(dimensions, source));
+    }
+    Some(value)
+}
+
+fn normalized_text(node: Node<'_>, source: &str) -> String {
+    text(node, source)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
 }
 
 fn has_static_modifier(node: Node<'_>, source: &str) -> bool {
@@ -308,9 +457,18 @@ fn call_draft(node: Node<'_>, source: &str) -> CallDraft {
         kind,
         name,
         receiver,
+        arity: node
+            .child_by_field_name("arguments")
+            .map(argument_count)
+            .unwrap_or_default(),
         line: position.row + 1,
         column: position.column + 1,
     }
+}
+
+fn argument_count(node: Node<'_>) -> usize {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor).count()
 }
 
 pub(crate) fn resolve(
@@ -345,6 +503,8 @@ struct ResolveContext {
 struct MethodTarget {
     canonical: String,
     is_static: bool,
+    arity: usize,
+    is_varargs: bool,
 }
 
 impl ResolveContext {
@@ -364,6 +524,7 @@ impl ResolveContext {
                             canonical: symbol.canonical.clone(),
                             file: file.path.clone(),
                             is_class: symbol.kind == SymbolKind::Class,
+                            has_hierarchy: symbol.owner_has_hierarchy,
                         });
                 } else if symbol.kind == SymbolKind::Method
                     && let Some(owner) = &symbol.owner
@@ -375,6 +536,8 @@ impl ResolveContext {
                         .push(MethodTarget {
                             canonical: symbol.canonical.clone(),
                             is_static: symbol.is_static,
+                            arity: symbol.arity,
+                            is_varargs: symbol.is_varargs,
                         });
                 }
             }
@@ -439,7 +602,19 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> ResolvedFile {
                         .and_then(|owner| context.methods.get(&(owner.clone(), call.name.clone())))
                         .cloned();
                     if local.is_some() {
-                        add_unique(&mut calls, &mut issues, file, symbol, call, local);
+                        let candidates = Some(
+                            local
+                                .unwrap_or_default()
+                                .into_iter()
+                                .filter(|target| {
+                                    method_matches_call(target, call)
+                                        && (!symbol.owner_has_hierarchy || call.arity == 0)
+                                })
+                                .collect(),
+                        );
+                        add_unique(&mut calls, &mut issues, file, symbol, call, candidates);
+                    } else if symbol.owner_has_hierarchy {
+                        add_unique(&mut calls, &mut issues, file, symbol, call, None);
                     } else {
                         add_unique(
                             &mut calls,
@@ -447,7 +622,13 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> ResolvedFile {
                             file,
                             symbol,
                             call,
-                            static_imports.get(&call.name).cloned(),
+                            static_imports.get(&call.name).map(|targets| {
+                                targets
+                                    .iter()
+                                    .filter(|target| method_matches_call(target, call))
+                                    .cloned()
+                                    .collect()
+                            }),
                         );
                     }
                 }
@@ -473,8 +654,10 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> ResolvedFile {
                     owners.extend(class_imports.get(receiver).cloned().unwrap_or_default());
                     owners.sort_by(|left, right| left.canonical.cmp(&right.canonical));
                     owners.dedup_by(|left, right| left.canonical == right.canonical);
-                    let candidates = if let [owner] = owners.as_slice() {
-                        if !owner.is_class {
+                    let candidates = if symbol.owner_has_hierarchy {
+                        None
+                    } else if let [owner] = owners.as_slice() {
+                        if !owner.is_class || owner.has_hierarchy {
                             None
                         } else {
                             context
@@ -483,7 +666,9 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> ResolvedFile {
                                 .map(|methods| {
                                     methods
                                         .iter()
-                                        .filter(|method| method.is_static)
+                                        .filter(|method| {
+                                            method.is_static && method_matches_call(method, call)
+                                        })
                                         .cloned()
                                         .collect()
                                 })
@@ -533,7 +718,7 @@ fn static_import_target(
     let [class] = classes.as_slice() else {
         return None;
     };
-    if !class.is_class {
+    if !class.is_class || class.has_hierarchy {
         return None;
     }
     let methods = context
@@ -548,6 +733,10 @@ fn static_import_target(
         [target] => Some((method.to_owned(), target.clone(), class.file.clone())),
         _ => None,
     }
+}
+
+fn method_matches_call(target: &MethodTarget, call: &CallDraft) -> bool {
+    !target.is_varargs && target.arity == call.arity
 }
 
 fn add_unique(
@@ -699,6 +888,83 @@ mod tests {
         )]);
         assert!(facts["src/demo/Worker.java"].calls.is_empty());
         assert!(facts["src/demo/Worker.java"].issues.len() >= 3);
+    }
+
+    #[test]
+    fn overloads_have_stable_signatures_and_resolve_only_exact_arity() {
+        let parsed = parse(
+            "src/demo/Worker.java",
+            "package demo; class Worker { void f() {} void f(int value) {} void g() { f(); f(1); } }",
+        )
+        .unwrap();
+        let ProviderParsedFile::Java(parsed) = parsed else {
+            panic!("expected Java parse artifact");
+        };
+        assert!(
+            parsed
+                .symbols
+                .iter()
+                .any(|symbol| symbol.canonical == "src/demo/Worker.java::Worker.f()")
+        );
+        assert!(
+            parsed
+                .symbols
+                .iter()
+                .any(|symbol| symbol.canonical == "src/demo/Worker.java::Worker.f(int)")
+        );
+
+        let facts = resolved(&[(
+            "src/demo/Worker.java",
+            "package demo; class Worker { void f() {} void f(int value) {} void g() { f(); f(1); } }",
+        )]);
+        let calls = &facts["src/demo/Worker.java"].calls;
+        assert_eq!(calls.len(), 2);
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.to == "src/demo/Worker.java::Worker.f()")
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.to == "src/demo/Worker.java::Worker.f(int)")
+        );
+    }
+
+    #[test]
+    fn inherited_and_static_import_competition_remain_unresolved() {
+        let facts = resolved(&[
+            ("src/demo/A.java", "package demo; class A { void f() {} }"),
+            (
+                "src/demo/B.java",
+                "package demo; class B extends A { void f(int value) {} void g() { f(); } }",
+            ),
+            (
+                "src/demo/C.java",
+                "package demo; class C extends A { void f() {} void g() { f(); } }",
+            ),
+            (
+                "src/demo/Util.java",
+                "package demo; class Util { static void f() {} }",
+            ),
+            (
+                "src/demo/Use.java",
+                "package demo; import static demo.Util.f; class Use { void f(int value) {} void g() { f(); } }",
+            ),
+        ]);
+        assert!(facts["src/demo/B.java"].calls.is_empty());
+        assert!(facts["src/demo/Use.java"].calls.is_empty());
+        assert_eq!(facts["src/demo/C.java"].calls.len(), 1);
+        assert_eq!(facts["src/demo/C.java"].calls[0].to, "src/demo/C.java::C.f");
+    }
+
+    #[test]
+    fn fields_do_not_become_class_qualified_static_receivers() {
+        let facts = resolved(&[(
+            "src/demo/Worker.java",
+            "package demo; class Util { static void ping() {} } class Worker { Object Util; void entry() { Util.ping(); } }",
+        )]);
+        assert!(facts["src/demo/Worker.java"].calls.is_empty());
     }
 
     #[test]
