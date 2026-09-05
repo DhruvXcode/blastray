@@ -106,7 +106,7 @@ impl Server {
         &self,
         Parameters(InspectInput { target }): Parameters<InspectInput>,
     ) -> CallToolResult {
-        self.answer(|index| query::inspect(index.graph(), &target))
+        self.answer(|index| index.inspect(&target))
     }
 
     #[tool(

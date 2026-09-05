@@ -37,7 +37,7 @@ fn run(args: Vec<String>) -> Result<String, String> {
             answer_with_index(|index| Ok(query::find(index.graph(), target)))
         }
         [command, target] if command == "inspect" => {
-            answer_with_index(|index| query::inspect(index.graph(), target))
+            answer_with_index(|index| index.inspect(target))
         }
         [command, from, to] if command == "trace" => {
             answer_with_index(|index| query::trace(index.graph(), from, to))

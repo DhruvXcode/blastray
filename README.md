@@ -25,6 +25,9 @@ blastray impact --diff
 and symbol-name matches stay deterministic; task queries use compact local
 source evidence to suggest a small set of places to inspect.
 
+`inspect` returns a compact definition slice alongside confirmed callers,
+callees, call-site evidence, imports, and any relevant unresolved boundaries.
+
 ## MCP
 
 `blastray mcp` is a stdio MCP server. Configure an MCP-capable client to launch it in the repository working directory. It exposes exactly `find`, `inspect`, `trace`, and `impact`; `impact` accepts `@diff` for working-tree impact.

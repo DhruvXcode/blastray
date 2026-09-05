@@ -280,6 +280,13 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
     let discovery = text(&discovery_response);
     assert!(discovery.contains("src/auth.ts::verifyCredentials"));
     assert!(discovery.contains("comment/doc match"));
+    let inspected_auth_response = mcp.call(
+        "inspect",
+        json!({"target": "src/auth.ts::verifyCredentials"}),
+    );
+    let inspected_auth = text(&inspected_auth_response);
+    assert!(inspected_auth.contains("Source context"));
+    assert!(inspected_auth.contains("Validate incoming bearer tokens"));
     assert!(
         text(&mcp.call("inspect", json!({"target": "src/a.ts::leaf"}))).contains("src/b.ts::entry")
     );

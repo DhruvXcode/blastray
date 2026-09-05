@@ -693,3 +693,41 @@ test: editing a comment creates a new discovery result, and reopening the one
 persisted cache returns the same result. MCP `find` already calls that same
 `Index::sync`, so it receives the refreshed ranking without a fifth tool or
 another lifecycle.
+
+## Mission 20 inspect packet evaluation
+
+Inspect 2.0 was reviewed on twelve already-inspected symbols from the same
+pinned public repositories used for supported-language work. Before this
+change, `inspect` exposed the structural neighborhood and imports but an agent
+would normally open the defining file for declaration, intent, and local body
+context. The new packet supplied that orientation directly for all twelve;
+larger bodies were visibly truncated rather than dumped.
+
+| repository and commit | symbol | useful packet evidence |
+| --- | --- | --- |
+| Flask `d318b683` | `Flask.dispatch_request` | URL/view docstring, dispatch branches, caller, three confirmed callees |
+| Flask | `Flask.do_teardown_request` | request-context teardown contract, final signal, unresolved boundary list |
+| Flask | `SecureCookieSessionInterface.save_session` | cookie-write branches, signing callee, conservative receiver boundaries |
+| Flask | `Flask.handle_user_exception` | exception-handling docstring and response/error decision context |
+| ripgrep `3fce3b5b` | `flags::parse` | CLI-to-high-level-arguments docstring, `parse_low` call, unresolved associated calls |
+| ripgrep | `core::main::run` | mode selection body and process-exit decision context |
+| ripgrep | `WalkBuilder.build_matchers` | lazy matcher construction, `build_ignore` call, bounded receiver diagnostics |
+| ripgrep | `flags::config::parse_reader` | rc-file reader contract and parsing loop |
+| Kodegraf `f5ca3767` | `runChecks` | enabled-check docstring, diff setup, two callers and parser/check callees |
+| Kodegraf | `learnCorrection` | manual-correction intent, graph write, caller and `openGraph` callee |
+| Kodegraf | `validateConfig` | validation declaration and representative guard clauses |
+| Kodegraf | `formatTerminal` | terminal-format contract and pass/fail/warn rendering branches |
+
+The packet bounds source at 24 rendered lines (first 20 plus the final four
+when truncated), 180 characters per line, eight callers/callees/imports/issues,
+and three likely-test suggestions. Its source file is read after the ordinary
+freshness sync, so no persisted cache field or schema changed. A warmed,
+release-mode ripgrep `inspect flags::parse` completed in 0.13 s on this
+environment, including the existing whole-tree freshness check and one source
+read; this is a single-machine observation, not a latency claim.
+
+Dogfood began with the vague ripgrep task “where are CLI arguments converted to
+high level settings.” Find 2.0 returned `flags::parse`; Inspect 2.0 then gave
+the declaration/docstring, its confirmed `parse_low` callee, relevant imports,
+and explicit unsupported associated calls. That was enough to start in the
+correct parser layer without immediately opening or grepping the file.

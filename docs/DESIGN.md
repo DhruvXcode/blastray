@@ -188,3 +188,14 @@ already textual candidates, but never adds a candidate or graph edge. Search
 relevance is therefore not graph truth: IMPORTS and CALLS remain only the
 conservative facts proven by providers. There are no embeddings, model calls,
 vector storage, daemon, or second indexing lifecycle.
+
+## Mission 20 boundary
+
+`inspect` reads the already-synchronized defining source file at query time and
+renders a bounded declaration/body slice with immediately preceding comment or
+doc context. Source is not duplicated in `.blastray`; a missing or stale span
+is reported as unavailable rather than fabricated. Confirmed callers, callees,
+call sites, imports, and unresolved boundaries remain graph facts. A small
+`Likely relevant tests` section may use test-path/name proximity or confirmed
+call-neighborhood evidence, and is explicitly relevance context—not a TESTS
+edge or structural claim.

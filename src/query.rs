@@ -4,6 +4,10 @@ use crate::index::{Graph, RelationshipIssue, SearchFact, Symbol};
 
 const MAX_TRAVERSAL: usize = 500;
 const FIND_LIMIT: usize = 20;
+const INSPECT_LIST_LIMIT: usize = 8;
+const INSPECT_TEST_LIMIT: usize = 3;
+const INSPECT_SOURCE_LINES: usize = 24;
+const INSPECT_SOURCE_LINE_CHARS: usize = 180;
 
 pub(crate) struct ReverseImpact {
     pub by_depth: BTreeMap<usize, Vec<usize>>,
@@ -351,6 +355,14 @@ fn tokens(value: &str) -> Vec<String> {
 }
 
 pub fn inspect(graph: &Graph, target: &str) -> Result<String, String> {
+    inspect_with_source(graph, target, None)
+}
+
+pub fn inspect_with_source(
+    graph: &Graph,
+    target: &str,
+    source: Option<&str>,
+) -> Result<String, String> {
     let target = select(graph, target)?;
     let symbol = &graph.symbols[target];
     let callers = graph.callers(target);
@@ -361,20 +373,23 @@ pub fn inspect(graph: &Graph, target: &str) -> Result<String, String> {
         .expect("every indexed symbol has one DEFINES edge");
     let imports = graph.imported_files(defining_file);
     let mut output = format!(
-        "{}\nDefining file: {}\nDirect callers:",
+        "{}\nDefining file: {}",
         symbol_line(graph, symbol),
         graph.files[defining_file].path
     );
-    append_symbols(&mut output, graph, callers);
+    append_source_context(&mut output, source, symbol);
+    output.push_str("\nDirect callers:");
+    append_callers(&mut output, graph, target, callers);
     output.push_str("\nDirect callees:");
     append_callees(&mut output, graph, target, callees);
     output.push_str("\nDefining file imports:");
-    append_files(&mut output, graph, imports);
+    append_limited_files(&mut output, graph, imports, INSPECT_LIST_LIMIT);
+    append_likely_tests(&mut output, graph, target);
     output.push_str("\nUnresolved or ambiguous outgoing calls:");
     if issues.is_empty() {
         output.push_str(" none");
     } else {
-        for issue in issues {
+        for issue in issues.iter().take(INSPECT_LIST_LIMIT) {
             output.push_str(&format!(
                 "\n- {} {}:{} call '{}' — {}",
                 issue.status.label(),
@@ -384,6 +399,7 @@ pub fn inspect(graph: &Graph, target: &str) -> Result<String, String> {
                 issue.detail
             ));
         }
+        append_remaining(&mut output, issues.len(), INSPECT_LIST_LIMIT, "boundaries");
     }
     Ok(output)
 }
@@ -544,18 +560,34 @@ fn append_symbols(output: &mut String, graph: &Graph, symbols: &[usize]) {
     }
 }
 
+fn append_callers(output: &mut String, graph: &Graph, target: usize, callers: &[usize]) {
+    if callers.is_empty() {
+        output.push_str(" none");
+        return;
+    }
+    for caller in callers.iter().take(INSPECT_LIST_LIMIT) {
+        output.push_str(&format!(
+            "\n- {}{}",
+            symbol_line(graph, &graph.symbols[*caller]),
+            call_sites(graph, *caller, target)
+        ));
+    }
+    append_remaining(output, callers.len(), INSPECT_LIST_LIMIT, "callers");
+}
+
 fn append_callees(output: &mut String, graph: &Graph, source: usize, callees: &[usize]) {
     if callees.is_empty() {
         output.push_str(" none");
         return;
     }
-    for callee in callees {
+    for callee in callees.iter().take(INSPECT_LIST_LIMIT) {
         output.push_str(&format!(
             "\n- {}{}",
             symbol_line(graph, &graph.symbols[*callee]),
             call_sites(graph, source, *callee)
         ));
     }
+    append_remaining(output, callees.len(), INSPECT_LIST_LIMIT, "callees");
 }
 
 fn call_sites(graph: &Graph, from: usize, to: usize) -> String {
@@ -565,24 +597,166 @@ fn call_sites(graph: &Graph, from: usize, to: usize) -> String {
         [] => String::new(),
         [site] => format!(" [call at {source}:{}:{}]", site.line, site.column),
         _ => format!(
-            " [calls at {}]",
+            " [calls at {}{}]",
             sites
                 .iter()
+                .take(INSPECT_LIST_LIMIT)
                 .map(|site| format!("{source}:{}:{}", site.line, site.column))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
+            if sites.len() > INSPECT_LIST_LIMIT {
+                format!(", … {} more", sites.len() - INSPECT_LIST_LIMIT)
+            } else {
+                String::new()
+            }
         ),
     }
 }
 
-fn append_files(output: &mut String, graph: &Graph, files: &[usize]) {
+fn append_limited_files(output: &mut String, graph: &Graph, files: &[usize], limit: usize) {
     if files.is_empty() {
         output.push_str(" none");
         return;
     }
-    for file in files {
+    for file in files.iter().take(limit) {
         output.push_str(&format!("\n- {}", graph.files[*file].path));
     }
+    append_remaining(output, files.len(), limit, "imports");
+}
+
+fn append_remaining(output: &mut String, total: usize, shown: usize, label: &str) {
+    if total > shown {
+        output.push_str(&format!("\n- … {} more {label}", total - shown));
+    }
+}
+
+fn append_source_context(output: &mut String, source: Option<&str>, symbol: &Symbol) {
+    let Some(source) = source else {
+        output.push_str("\nSource context: unavailable");
+        return;
+    };
+    let lines: Vec<&str> = source.lines().collect();
+    let start = symbol.line.saturating_sub(1);
+    if start >= lines.len() {
+        output.push_str("\nSource context: unavailable (symbol span is outside current source)");
+        return;
+    }
+    let mut context_start = start;
+    while context_start > 0 && start - context_start < 3 {
+        let previous = lines[context_start - 1].trim_start();
+        if previous.starts_with("//")
+            || previous.starts_with("/*")
+            || previous.starts_with('*')
+            || previous.ends_with("*/")
+            || previous.starts_with('#')
+            || previous.starts_with("\"\"\"")
+            || previous.starts_with("'''")
+        {
+            context_start -= 1;
+        } else {
+            break;
+        }
+    }
+    let end = symbol.end_line.min(lines.len());
+    let total = end.saturating_sub(context_start);
+    output.push_str(&format!(
+        "\nSource context ({}-{}):",
+        context_start + 1,
+        end
+    ));
+    let shown_head = INSPECT_SOURCE_LINES.saturating_sub(4).min(total);
+    append_source_range(output, &lines, context_start, context_start + shown_head);
+    if total > INSPECT_SOURCE_LINES {
+        output.push_str(&format!(
+            "\n  … {} source lines omitted …",
+            total - INSPECT_SOURCE_LINES
+        ));
+        append_source_range(output, &lines, end.saturating_sub(4), end);
+    } else {
+        append_source_range(output, &lines, context_start + shown_head, end);
+    }
+}
+
+fn append_source_range(output: &mut String, lines: &[&str], start: usize, end: usize) {
+    for (line, source) in lines.iter().enumerate().skip(start).take(end - start) {
+        append_source_line(output, line + 1, source);
+    }
+}
+
+fn append_source_line(output: &mut String, line: usize, source: &str) {
+    let compact = source.trim_end();
+    let text: String = compact.chars().take(INSPECT_SOURCE_LINE_CHARS).collect();
+    output.push_str(&format!("\n{line:>5} | {text}"));
+    if compact.chars().count() > INSPECT_SOURCE_LINE_CHARS {
+        output.push('…');
+    }
+}
+
+fn append_likely_tests(output: &mut String, graph: &Graph, target: usize) {
+    if is_test_symbol(graph, target) {
+        return;
+    }
+    let target_symbol = &graph.symbols[target];
+    let target_terms = &graph.search[target].identifier;
+    let mut tests: Vec<(usize, usize, Vec<&'static str>)> = graph
+        .symbols
+        .iter()
+        .enumerate()
+        .filter(|(candidate, _)| *candidate != target && is_test_symbol(graph, *candidate))
+        .filter_map(|(candidate, symbol)| {
+            let mut score = 0;
+            let mut reasons = Vec::new();
+            if symbol.file == target_symbol.file {
+                score += 100;
+                reasons.push("same file");
+            }
+            if graph.callers(target).contains(&candidate)
+                || graph.callees(target).contains(&candidate)
+            {
+                score += 300;
+                reasons.push("confirmed call neighborhood");
+            }
+            let shared = target_terms
+                .iter()
+                .filter(|term| graph.search[candidate].identifier.contains(*term))
+                .count();
+            if shared > 0 {
+                score += shared.min(4) * 25;
+                reasons.push("identifier overlap");
+            }
+            (score >= 50).then_some((candidate, score, reasons))
+        })
+        .collect();
+    tests.sort_by(|left, right| {
+        right.1.cmp(&left.1).then_with(|| {
+            graph.symbols[left.0]
+                .canonical
+                .cmp(&graph.symbols[right.0].canonical)
+        })
+    });
+    if tests.is_empty() {
+        return;
+    }
+    output.push_str("\nLikely relevant tests (relevance evidence, not TESTS edges):");
+    for (test, _, reasons) in tests.into_iter().take(INSPECT_TEST_LIMIT) {
+        output.push_str(&format!(
+            "\n- {} [{}]",
+            symbol_line(graph, &graph.symbols[test]),
+            reasons.join(" + ")
+        ));
+    }
+}
+
+fn is_test_symbol(graph: &Graph, symbol: usize) -> bool {
+    let path = &graph.files[graph.symbols[symbol].file].path;
+    let path_marks_test = path.split('/').any(|part| {
+        matches!(part, "test" | "tests" | "spec" | "specs")
+            || part.contains(".test.")
+            || part.contains(".spec.")
+    });
+    let name = graph.symbols[symbol].name.to_lowercase();
+    path_marks_test
+        || (!graph.search[symbol].test.is_empty() && (name == "test" || name.starts_with("test_")))
 }
 
 fn symbol_line(graph: &Graph, symbol: &Symbol) -> String {

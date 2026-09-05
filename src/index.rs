@@ -326,6 +326,19 @@ impl Index {
         &self.graph
     }
 
+    /// Source is deliberately read at inspection time instead of duplicated in
+    /// the cache. `sync` has already made the graph fresh for CLI/MCP callers.
+    pub fn inspect(&self, target: &str) -> Result<String, String> {
+        let source = self
+            .graph
+            .symbol_candidates(target)
+            .as_slice()
+            .first()
+            .and_then(|symbol| self.graph.defining_file(*symbol))
+            .and_then(|file| fs::read_to_string(self.root.join(&self.graph.files[file].path)).ok());
+        crate::query::inspect_with_source(&self.graph, target, source.as_deref())
+    }
+
     pub fn has_supported_source_files(&self) -> bool {
         !self.graph.files.is_empty()
     }
@@ -1655,6 +1668,53 @@ mod tests {
         assert_eq!(
             refreshed,
             query::find(persistent.graph(), "browser cookie renewal")
+        );
+    }
+
+    #[test]
+    fn inspection_reads_a_bounded_fresh_source_packet_and_ranks_tests_as_context() {
+        let repo = Repo::new(&[
+            (
+                "src/auth.ts",
+                "/** Validate incoming bearer tokens before a request reaches a handler. */\nexport function verifyCredentials(token: string) {\n  return token.length > 0;\n}\n\nexport function longOperation() {\n  const one = '01';\n  const two = '02';\n  const three = '03';\n  const four = '04';\n  const five = '05';\n  const six = '06';\n  const seven = '07';\n  const eight = '08';\n  const nine = '09';\n  const ten = '10';\n  const eleven = '11';\n  const twelve = '12';\n  const thirteen = '13';\n  const fourteen = '14';\n  const fifteen = '15';\n  const sixteen = '16';\n  const seventeen = '17';\n  const eighteen = '18';\n  const nineteen = '19';\n  const twenty = '20';\n  const twentyOne = '21';\n  const twentyTwo = '22';\n  const twentyThree = '23';\n  const twentyFour = '24';\n  return one + two + three + four + five + six + seven + eight + nine + ten + eleven + twelve + thirteen + fourteen + fifteen + sixteen + seventeen + eighteen + nineteen + twenty + twentyOne + twentyTwo + twentyThree + twentyFour;\n}\n",
+            ),
+            (
+                "src/use.ts",
+                "import { verifyCredentials } from './auth';\nexport function handleRequest() { return verifyCredentials('token'); }\n",
+            ),
+            (
+                "tests/auth.test.ts",
+                "import { verifyCredentials } from '../src/auth';\nexport function test_rejects_empty_token() { return verifyCredentials(''); }\n",
+            ),
+        ]);
+        let mut index = Index::build(&repo.0).unwrap();
+        let packet = index.inspect("src/auth.ts::verifyCredentials").unwrap();
+        assert!(packet.contains("Source context (1-4):"), "{packet}");
+        assert!(
+            packet.contains("Validate incoming bearer tokens"),
+            "{packet}"
+        );
+        assert!(packet.contains("src/use.ts::handleRequest"), "{packet}");
+        assert!(packet.contains("call at src/use.ts:2:"), "{packet}");
+        assert!(packet.contains("Likely relevant tests"), "{packet}");
+        assert!(packet.contains("test_rejects_empty_token"), "{packet}");
+
+        let long = index.inspect("src/auth.ts::longOperation").unwrap();
+        assert!(long.contains("source lines omitted"), "{long}");
+
+        repo.write(
+            "src/auth.ts",
+            "/** Validate freshly rotated bearer tokens before a request reaches a handler. */\nexport function verifyCredentials(token: string) {\n  return token.length > 0;\n}\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("src/auth.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        assert!(
+            index
+                .inspect("src/auth.ts::verifyCredentials")
+                .unwrap()
+                .contains("freshly rotated bearer tokens")
         );
     }
 
