@@ -123,3 +123,13 @@ flows remain unresolved.
 An empty supported-source set is not treated as meaningful structural evidence.
 CLI and MCP queries state the current `.ts`, `.tsx`, `.js`, and `.jsx` language
 boundary; a mixed repository still indexes its supported files normally.
+
+## Mission 13 boundary
+
+`language.rs` owns a small compile-time provider table. The core asks it which
+files are supported, parses source into provider-owned artifacts, requests
+common resolved facts for selected files, and derives the supported-language
+message from registered extensions. The JS/TS provider owns its Tree-sitter
+grammar, AST extraction, module/export resolution, and receiver rules; index
+lifecycle, graph materialization, queries, diff orchestration, CLI, and MCP do
+not branch on JS/TS syntax.

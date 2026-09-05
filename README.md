@@ -14,7 +14,7 @@ It provides four primitives:
 
 ## Status
 
-Mission 11 provides a deterministic TypeScript/JavaScript slice for `.ts`,
+Mission 13 provides a deterministic TypeScript/JavaScript slice for `.ts`,
 `.tsx`, `.js`, and `.jsx` files, with a persistent local index and
 `impact --diff` for staged plus unstaged Git changes. It indexes named
 top-level functions, callable top-level `const` bindings, classes, and class

@@ -100,3 +100,12 @@ fact to target the existing non-static Method canonical symbol, with ordinary
 CALLS evidence and adjacency. The facts are scoped to the containing callable;
 reassigned or competing bindings do not resolve. Cache schema 7 invalidates
 prior parsed artifacts.
+
+## Mission 13 provider facts
+
+The cache now stores a provider-tagged parsed artifact plus common resolved
+file facts. Providers keep syntax and resolution details private, while the
+core materializes only common symbol facts, imports, calls, issues, and call
+sites. Cache schema 8 invalidates pre-provider artifacts. A provider receives
+the full parsed repository for context but resolves only the paths selected by
+the incremental lifecycle.

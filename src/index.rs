@@ -6,12 +6,8 @@ use std::path::{Component, Path, PathBuf};
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 
-use crate::parse::{
-    ImportBinding, ImportDraft, LocalExportDraft, ParsedFile, ReexportDraft, SymbolDraft,
-    parse_file,
-};
+use crate::language::{self, ParsedFile, ResolvedFile, SymbolFact};
 
-const EXTENSIONS: [&str; 4] = ["ts", "tsx", "js", "jsx"];
 const SKIP_DIRECTORIES: [&str; 7] = [
     ".git",
     ".blastray",
@@ -23,10 +19,11 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 7;
+const CACHE_SCHEMA: u32 = 8;
 
-pub const NO_SUPPORTED_SOURCE_FILES: &str =
-    "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, and .jsx.";
+pub fn no_supported_source_files_message() -> String {
+    language::no_supported_source_files_message()
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SymbolKind {
@@ -179,7 +176,7 @@ pub struct Index {
     root: PathBuf,
     hashes: BTreeMap<String, [u8; 32]>,
     parsed: BTreeMap<String, ParsedFile>,
-    resolved: BTreeMap<String, FileResolution>,
+    resolved: BTreeMap<String, ResolvedFile>,
     graph: Graph,
 }
 
@@ -250,13 +247,9 @@ impl Index {
             let path = root.join(relative);
             let source = std::fs::read_to_string(&path)
                 .map_err(|error| format!("cannot read {relative}: {error}"))?;
-            parsed.insert(relative.clone(), parse_file(relative, &source)?);
+            parsed.insert(relative.clone(), language::parse(relative, &source)?);
         }
-        let context = ResolveContext::new(&parsed);
-        let resolved = parsed
-            .values()
-            .map(|file| (file.path.clone(), resolve_file(file, &context)))
-            .collect();
+        let resolved = language::resolve_all(&parsed);
         let graph = materialize_graph(&parsed, &resolved);
         Ok(Self {
             root,
@@ -292,21 +285,21 @@ impl Index {
         let source = std::fs::read_to_string(&source_path)
             .map_err(|error| format!("cannot read {relative}: {error}"))?;
         self.parsed
-            .insert(relative.clone(), parse_file(&relative, &source)?);
+            .insert(relative.clone(), language::parse(&relative, &source)?);
         self.hashes.insert(
             relative.clone(),
             *blake3::hash(source.as_bytes()).as_bytes(),
         );
 
-        let context = ResolveContext::new(&self.parsed);
         let mut affected = importers;
         affected.insert(relative);
+        let resolved = language::resolve_files(&self.parsed, &affected);
         for path in affected {
-            let file = self
-                .parsed
+            let facts = resolved
                 .get(&path)
-                .expect("affected files remain in the parsed index");
-            self.resolved.insert(path, resolve_file(file, &context));
+                .expect("affected files remain in the parsed index")
+                .clone();
+            self.resolved.insert(path, facts);
         }
         self.graph = materialize_graph(&self.parsed, &self.resolved);
         Ok(RefreshKind::Incremental)
@@ -398,7 +391,7 @@ struct CacheEnvelope {
 struct CachedIndex {
     hashes: BTreeMap<String, [u8; 32]>,
     parsed: BTreeMap<String, ParsedFile>,
-    resolved: BTreeMap<String, FileResolution>,
+    resolved: BTreeMap<String, ResolvedFile>,
 }
 
 impl CachedIndex {
@@ -409,8 +402,8 @@ impl CachedIndex {
             return false;
         }
         self.parsed.iter().all(|(path, file)| {
-            file.path == *path
-                && file.symbols.iter().all(|symbol| {
+            file.path() == path
+                && file.symbols().iter().all(|symbol| {
                     symbol.file == *path && symbol.canonical.starts_with(&format!("{path}::"))
                 })
         })
@@ -514,9 +507,7 @@ fn source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 pub(crate) fn is_source_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| EXTENSIONS.contains(&extension))
+    language::is_supported_path(path)
 }
 
 fn relative_path(root: &Path, path: &Path) -> Result<String, String> {
@@ -531,696 +522,9 @@ fn relative_path(root: &Path, path: &Path) -> Result<String, String> {
         })
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
-struct FileResolution {
-    imports: Vec<String>,
-    calls: Vec<ResolvedCall>,
-    issues: Vec<RelationshipIssue>,
-}
-
-#[derive(Clone, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-struct ResolvedCall {
-    from: String,
-    to: String,
-    line: usize,
-    column: usize,
-}
-
-struct ResolveContext {
-    files: BTreeSet<String>,
-    canonical_symbols: BTreeMap<String, Vec<String>>,
-    local_functions: BTreeMap<(String, String), Vec<String>>,
-    local_classes: BTreeMap<(String, String), Vec<String>>,
-    exported_classes: BTreeMap<(String, String, bool), Vec<String>>,
-    this_methods: BTreeMap<(String, String, String, bool), Vec<String>>,
-    exports: BTreeMap<(String, String, bool), Vec<String>>,
-    ambiguous_exports: BTreeSet<(String, String, bool)>,
-}
-
-impl ResolveContext {
-    fn new(parsed: &BTreeMap<String, ParsedFile>) -> Self {
-        let mut context = Self {
-            files: parsed.keys().cloned().collect(),
-            canonical_symbols: BTreeMap::new(),
-            local_functions: BTreeMap::new(),
-            local_classes: BTreeMap::new(),
-            exported_classes: BTreeMap::new(),
-            this_methods: BTreeMap::new(),
-            exports: BTreeMap::new(),
-            ambiguous_exports: BTreeSet::new(),
-        };
-        for file in parsed.values() {
-            for symbol in &file.symbols {
-                context
-                    .canonical_symbols
-                    .entry(symbol.canonical.clone())
-                    .or_default()
-                    .push(symbol.canonical.clone());
-                if symbol.kind == SymbolKind::Function {
-                    context
-                        .local_functions
-                        .entry((file.path.clone(), symbol.name.clone()))
-                        .or_default()
-                        .push(symbol.canonical.clone());
-                    if symbol.exported {
-                        context
-                            .exports
-                            .entry((file.path.clone(), symbol.name.clone(), false))
-                            .or_default()
-                            .push(symbol.canonical.clone());
-                    }
-                }
-                if symbol.kind == SymbolKind::Class {
-                    context
-                        .local_classes
-                        .entry((file.path.clone(), symbol.name.clone()))
-                        .or_default()
-                        .push(symbol.canonical.clone());
-                    if symbol.exported {
-                        context
-                            .exported_classes
-                            .entry((file.path.clone(), symbol.name.clone(), false))
-                            .or_default()
-                            .push(symbol.canonical.clone());
-                    }
-                    if symbol.default_export {
-                        context
-                            .exported_classes
-                            .entry((file.path.clone(), String::new(), true))
-                            .or_default()
-                            .push(symbol.canonical.clone());
-                    }
-                }
-                if symbol.kind == SymbolKind::Method
-                    && let Some((class, _)) = method_owner(&symbol.canonical)
-                {
-                    context
-                        .this_methods
-                        .entry((
-                            file.path.clone(),
-                            class.to_string(),
-                            symbol.name.clone(),
-                            symbol.is_static,
-                        ))
-                        .or_default()
-                        .push(symbol.canonical.clone());
-                }
-                if symbol.default_export {
-                    context
-                        .exports
-                        .entry((file.path.clone(), String::new(), true))
-                        .or_default()
-                        .push(symbol.canonical.clone());
-                }
-            }
-        }
-        let direct_exports = context.exports.clone();
-        for file in parsed.values() {
-            for local_export in &file.local_exports {
-                resolve_local_export(file, local_export, &direct_exports, &mut context);
-            }
-        }
-        for file in parsed.values() {
-            for reexport in &file.reexports {
-                if reexport.type_only {
-                    continue;
-                }
-                let source_candidates =
-                    module_candidates(&file.path, &reexport.module, &context.files);
-                if source_candidates.len() > 1 {
-                    for binding in &reexport.bindings {
-                        context.ambiguous_exports.insert((
-                            file.path.clone(),
-                            binding.exported.clone(),
-                            false,
-                        ));
-                    }
-                    continue;
-                }
-                let [source] = source_candidates.as_slice() else {
-                    continue;
-                };
-                for binding in &reexport.bindings {
-                    if let Some(symbols) =
-                        direct_exports.get(&(source.clone(), binding.local.clone(), false))
-                    {
-                        context
-                            .exports
-                            .entry((file.path.clone(), binding.exported.clone(), false))
-                            .or_default()
-                            .extend(symbols.clone());
-                    }
-                }
-            }
-        }
-        context
-    }
-}
-
-fn resolve_local_export(
-    file: &ParsedFile,
-    local_export: &LocalExportDraft,
-    direct_exports: &BTreeMap<(String, String, bool), Vec<String>>,
-    context: &mut ResolveContext,
-) {
-    if local_export.type_only {
-        return;
-    }
-    let mut candidates = context
-        .local_functions
-        .get(&(file.path.clone(), local_export.local.clone()))
-        .cloned()
-        .unwrap_or_default();
-    for import in &file.imports {
-        if import.type_only {
-            continue;
-        }
-        for binding in &import.bindings {
-            if binding.local() != local_export.local {
-                continue;
-            }
-            let source_candidates = module_candidates(&file.path, &import.module, &context.files);
-            if source_candidates.len() > 1 {
-                context.ambiguous_exports.insert((
-                    file.path.clone(),
-                    local_export.exported.clone(),
-                    false,
-                ));
-                continue;
-            }
-            let [source] = source_candidates.as_slice() else {
-                continue;
-            };
-            let source_key = match binding {
-                ImportBinding::Named { imported, .. } => (source.clone(), imported.clone(), false),
-                ImportBinding::Default { .. } => (source.clone(), String::new(), true),
-            };
-            if context.ambiguous_exports.contains(&source_key) {
-                context.ambiguous_exports.insert((
-                    file.path.clone(),
-                    local_export.exported.clone(),
-                    false,
-                ));
-            } else if let Some(symbols) = direct_exports.get(&source_key) {
-                candidates.extend(symbols.clone());
-            }
-        }
-    }
-    match candidates.as_slice() {
-        [symbol] => context
-            .exports
-            .entry((file.path.clone(), local_export.exported.clone(), false))
-            .or_default()
-            .push(symbol.clone()),
-        [] => {}
-        _ => {
-            context.ambiguous_exports.insert((
-                file.path.clone(),
-                local_export.exported.clone(),
-                false,
-            ));
-        }
-    }
-}
-
-#[derive(Clone)]
-enum BindingTarget {
-    Resolved(String),
-    Unresolved,
-    Ambiguous,
-}
-
-fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> FileResolution {
-    let mut result = FileResolution::default();
-    let mut bindings = BTreeMap::new();
-    for import in &file.imports {
-        resolve_import(import, file, context, &mut bindings, &mut result);
-    }
-    for reexport in &file.reexports {
-        resolve_reexport_dependency(reexport, file, context, &mut result);
-    }
-    for draft in &file.symbols {
-        if context
-            .canonical_symbols
-            .get(&draft.canonical)
-            .is_none_or(|symbols| symbols.len() != 1)
-        {
-            continue;
-        }
-        for call in &draft.calls {
-            if call.this_member {
-                resolve_this_member_call(draft, file, call, context, &mut result);
-                continue;
-            }
-            if let Some(receiver) = &call.receiver
-                && draft.receiver_bindings.iter().any(|binding| {
-                    binding.name == *receiver
-                        && (binding.line, binding.column) <= (call.line, call.column)
-                })
-            {
-                resolve_constructor_member_call(draft, file, call, context, &mut result);
-                continue;
-            }
-            if !call.direct {
-                result.issues.push(issue(
-                    RelationshipStatus::Unresolved,
-                    &draft.canonical,
-                    call.line,
-                    call.column,
-                    &call.name,
-                    "receiver or dynamic call syntax is outside the Mission 1 subset",
-                ));
-                continue;
-            }
-            if draft.shadowed.contains(&call.name) {
-                result.issues.push(issue(
-                    RelationshipStatus::Unresolved,
-                    &draft.canonical,
-                    call.line,
-                    call.column,
-                    &call.name,
-                    "an unmodeled local binding could shadow this name",
-                ));
-                continue;
-            }
-            let key = (file.path.clone(), call.name.clone());
-            let mut candidates = context
-                .local_functions
-                .get(&key)
-                .cloned()
-                .unwrap_or_default();
-            candidates.extend(binding_targets(
-                bindings.get(&key),
-                &mut result.issues,
-                &draft.canonical,
-                call,
-            ));
-            candidates.sort();
-            candidates.dedup();
-            match candidates.as_slice() {
-                [target] => result.calls.push(ResolvedCall {
-                    from: draft.canonical.clone(),
-                    to: target.clone(),
-                    line: call.line,
-                    column: call.column,
-                }),
-                [] if !bindings.contains_key(&key) => result.issues.push(issue(
-                    RelationshipStatus::Unresolved,
-                    &draft.canonical,
-                    call.line,
-                    call.column,
-                    &call.name,
-                    "no matching local function or resolved import",
-                )),
-                [] => {}
-                _ => result.issues.push(issue(
-                    RelationshipStatus::Ambiguous,
-                    &draft.canonical,
-                    call.line,
-                    call.column,
-                    &call.name,
-                    "multiple callable definitions match this name",
-                )),
-            }
-        }
-    }
-    result.imports.sort();
-    result.imports.dedup();
-    result.calls.sort();
-    result.calls.dedup();
-    result.issues.sort_by(issue_order);
-    result
-}
-
-fn resolve_constructor_member_call(
-    draft: &SymbolDraft,
-    file: &ParsedFile,
-    call: &crate::parse::CallDraft,
-    context: &ResolveContext,
-    result: &mut FileResolution,
-) {
-    let receiver = call.receiver.as_ref().unwrap();
-    let bindings = draft
-        .receiver_bindings
-        .iter()
-        .filter(|binding| {
-            binding.name == *receiver && (binding.line, binding.column) <= (call.line, call.column)
-        })
-        .collect::<Vec<_>>();
-    let [binding] = bindings.as_slice() else {
-        result.issues.push(issue(
-            RelationshipStatus::Unresolved,
-            &draft.canonical,
-            call.line,
-            call.column,
-            &call.name,
-            "receiver ownership is not uniquely proven by a direct immutable constructor binding",
-        ));
-        return;
-    };
-    if binding.reassigned {
-        result.issues.push(issue(
-            RelationshipStatus::Unresolved,
-            &draft.canonical,
-            call.line,
-            call.column,
-            &call.name,
-            "receiver binding was reassigned in this callable scope",
-        ));
-        return;
-    }
-    if draft.shadowed.contains(&binding.class) {
-        result.issues.push(issue(
-            RelationshipStatus::Unresolved,
-            &draft.canonical,
-            call.line,
-            call.column,
-            &call.name,
-            "constructor class name could be shadowed in this callable scope",
-        ));
-        return;
-    }
-    let (classes, ambiguous) = constructor_class_candidates(file, &binding.class, context);
-    if ambiguous || classes.len() > 1 {
-        result.issues.push(issue(
-            RelationshipStatus::Ambiguous,
-            &draft.canonical,
-            call.line,
-            call.column,
-            &call.name,
-            "constructor class does not resolve uniquely",
-        ));
-        return;
-    }
-    let [class] = classes.as_slice() else {
-        result.issues.push(issue(
-            RelationshipStatus::Unresolved,
-            &draft.canonical,
-            call.line,
-            call.column,
-            &call.name,
-            "constructor class is not a uniquely indexed local or relative imported Class",
-        ));
-        return;
-    };
-    let Some((class_file, class_name)) = class.rsplit_once("::") else {
-        return;
-    };
-    let methods = context
-        .this_methods
-        .get(&(
-            class_file.to_string(),
-            class_name.to_string(),
-            call.name.clone(),
-            false,
-        ))
-        .cloned()
-        .unwrap_or_default();
-    match methods.as_slice() {
-        [target] => result.calls.push(ResolvedCall {
-            from: draft.canonical.clone(),
-            to: target.clone(),
-            line: call.line,
-            column: call.column,
-        }),
-        [] => result.issues.push(issue(
-            RelationshipStatus::Unresolved,
-            &draft.canonical,
-            call.line,
-            call.column,
-            &call.name,
-            "no matching non-static method exists on the constructor Class",
-        )),
-        _ => result.issues.push(issue(
-            RelationshipStatus::Ambiguous,
-            &draft.canonical,
-            call.line,
-            call.column,
-            &call.name,
-            "multiple non-static methods exist on the constructor Class",
-        )),
-    }
-}
-
-fn constructor_class_candidates(
-    file: &ParsedFile,
-    class: &str,
-    context: &ResolveContext,
-) -> (Vec<String>, bool) {
-    let mut candidates = context
-        .local_classes
-        .get(&(file.path.clone(), class.to_string()))
-        .cloned()
-        .unwrap_or_default();
-    let mut ambiguous = false;
-    for import in &file.imports {
-        if import.type_only {
-            continue;
-        }
-        let source_candidates = module_candidates(&file.path, &import.module, &context.files);
-        for binding in &import.bindings {
-            if binding.local() != class {
-                continue;
-            }
-            if source_candidates.len() > 1 {
-                ambiguous = true;
-                continue;
-            }
-            let [source] = source_candidates.as_slice() else {
-                continue;
-            };
-            let key = match binding {
-                ImportBinding::Named { imported, .. } => (source.clone(), imported.clone(), false),
-                ImportBinding::Default { .. } => (source.clone(), String::new(), true),
-            };
-            candidates.extend(
-                context
-                    .exported_classes
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or_default(),
-            );
-        }
-    }
-    (candidates, ambiguous)
-}
-
-fn resolve_reexport_dependency(
-    reexport: &ReexportDraft,
-    file: &ParsedFile,
-    context: &ResolveContext,
-    result: &mut FileResolution,
-) {
-    if reexport.type_only {
-        return;
-    }
-    if let [source] = module_candidates(&file.path, &reexport.module, &context.files).as_slice() {
-        result.imports.push(source.clone());
-    }
-}
-
-fn resolve_this_member_call(
-    draft: &SymbolDraft,
-    file: &ParsedFile,
-    call: &crate::parse::CallDraft,
-    context: &ResolveContext,
-    result: &mut FileResolution,
-) {
-    let Some((class, _)) = method_owner(&draft.canonical) else {
-        result.issues.push(issue(
-            RelationshipStatus::Unresolved,
-            &draft.canonical,
-            call.line,
-            call.column,
-            &call.name,
-            "this member call is outside an indexed direct class method",
-        ));
-        return;
-    };
-    let candidates = context
-        .this_methods
-        .get(&(
-            file.path.clone(),
-            class.to_string(),
-            call.name.clone(),
-            draft.is_static,
-        ))
-        .cloned()
-        .unwrap_or_default();
-    match candidates.as_slice() {
-        [target] => result.calls.push(ResolvedCall {
-            from: draft.canonical.clone(),
-            to: target.clone(),
-            line: call.line,
-            column: call.column,
-        }),
-        [] => result.issues.push(issue(
-            RelationshipStatus::Unresolved,
-            &draft.canonical,
-            call.line,
-            call.column,
-            &call.name,
-            "no matching same-class method",
-        )),
-        _ => result.issues.push(issue(
-            RelationshipStatus::Ambiguous,
-            &draft.canonical,
-            call.line,
-            call.column,
-            &call.name,
-            "multiple same-class methods match this member call",
-        )),
-    }
-}
-
-fn method_owner(canonical: &str) -> Option<(&str, &str)> {
-    let (_, member) = canonical.rsplit_once("::")?;
-    member.rsplit_once('.')
-}
-
-fn resolve_import(
-    import: &ImportDraft,
-    file: &ParsedFile,
-    context: &ResolveContext,
-    bindings: &mut BTreeMap<(String, String), Vec<BindingTarget>>,
-    result: &mut FileResolution,
-) {
-    let candidates = module_candidates(&file.path, &import.module, &context.files);
-    let target = match candidates.as_slice() {
-        [target] => {
-            result.imports.push(target.clone());
-            Some(target.clone())
-        }
-        [] => {
-            let detail = if import.module.starts_with("./") || import.module.starts_with("../") {
-                "relative module was not found"
-            } else {
-                "non-relative module imports are unsupported"
-            };
-            result.issues.push(issue(
-                RelationshipStatus::Unresolved,
-                &file.path,
-                import.line,
-                import.column,
-                &import.module,
-                detail,
-            ));
-            None
-        }
-        _ => {
-            result.issues.push(issue(
-                RelationshipStatus::Ambiguous,
-                &file.path,
-                import.line,
-                import.column,
-                &import.module,
-                "more than one source file matches this relative module",
-            ));
-            None
-        }
-    };
-    if let Some(detail) = &import.unsupported {
-        result.issues.push(issue(
-            RelationshipStatus::Unresolved,
-            &file.path,
-            import.line,
-            import.column,
-            &import.module,
-            detail,
-        ));
-    }
-    for binding in &import.bindings {
-        let key = (file.path.clone(), binding.local().to_string());
-        let value = if import.type_only {
-            BindingTarget::Unresolved
-        } else if let Some(target) = &target {
-            let export_key = match binding {
-                ImportBinding::Named { imported, .. } => (target.clone(), imported.clone(), false),
-                ImportBinding::Default { .. } => (target.clone(), String::new(), true),
-            };
-            if context.ambiguous_exports.contains(&export_key) {
-                BindingTarget::Ambiguous
-            } else {
-                match context
-                    .exports
-                    .get(&export_key)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[])
-                {
-                    [symbol] => BindingTarget::Resolved(symbol.clone()),
-                    [] => BindingTarget::Unresolved,
-                    _ => BindingTarget::Ambiguous,
-                }
-            }
-        } else if candidates.len() > 1 {
-            BindingTarget::Ambiguous
-        } else {
-            BindingTarget::Unresolved
-        };
-        if !matches!(value, BindingTarget::Resolved(_)) {
-            let detail = if import.type_only {
-                "type-only imports are not callable"
-            } else if target.is_some() {
-                "the imported symbol was not uniquely exported by the resolved module"
-            } else {
-                "the imported binding cannot be resolved until its module is resolved"
-            };
-            result.issues.push(issue(
-                match value {
-                    BindingTarget::Ambiguous => RelationshipStatus::Ambiguous,
-                    _ => RelationshipStatus::Unresolved,
-                },
-                &file.path,
-                import.line,
-                import.column,
-                binding.local(),
-                detail,
-            ));
-        }
-        bindings.entry(key).or_default().push(value);
-    }
-}
-
-fn binding_targets(
-    entries: Option<&Vec<BindingTarget>>,
-    issues: &mut Vec<RelationshipIssue>,
-    source: &str,
-    call: &crate::parse::CallDraft,
-) -> Vec<String> {
-    let Some(entries) = entries else {
-        return Vec::new();
-    };
-    let mut targets = Vec::new();
-    let mut unresolved = false;
-    let mut ambiguous = false;
-    for entry in entries {
-        match entry {
-            BindingTarget::Resolved(target) => targets.push(target.clone()),
-            BindingTarget::Unresolved => unresolved = true,
-            BindingTarget::Ambiguous => ambiguous = true,
-        }
-    }
-    if unresolved || ambiguous {
-        issues.push(issue(
-            if ambiguous {
-                RelationshipStatus::Ambiguous
-            } else {
-                RelationshipStatus::Unresolved
-            },
-            source,
-            call.line,
-            call.column,
-            &call.name,
-            "the imported binding is not uniquely resolved",
-        ));
-        return Vec::new();
-    }
-    targets
-}
-
 fn materialize_graph(
     parsed: &BTreeMap<String, ParsedFile>,
-    resolved: &BTreeMap<String, FileResolution>,
+    resolved: &BTreeMap<String, ResolvedFile>,
 ) -> Graph {
     let files: Vec<File> = parsed.keys().cloned().map(|path| File { path }).collect();
     let file_ids: BTreeMap<String, usize> = files
@@ -1228,10 +532,7 @@ fn materialize_graph(
         .enumerate()
         .map(|(id, file)| (file.path.clone(), id))
         .collect();
-    let mut drafts: Vec<SymbolDraft> = parsed
-        .values()
-        .flat_map(|file| file.symbols.clone())
-        .collect();
+    let mut drafts: Vec<SymbolFact> = parsed.values().flat_map(ParsedFile::symbols).collect();
     drafts.sort_by(|left, right| left.canonical.cmp(&right.canonical));
     let symbols: Vec<Symbol> = drafts
         .iter()
@@ -1345,65 +646,6 @@ where
     ids
 }
 
-fn module_candidates(from: &str, request: &str, files: &BTreeSet<String>) -> Vec<String> {
-    if !request.starts_with("./") && !request.starts_with("../") {
-        return Vec::new();
-    }
-    let base = Path::new(from)
-        .parent()
-        .unwrap_or_else(|| Path::new(""))
-        .join(request);
-    let Some(base) = normalize_relative(&base) else {
-        return Vec::new();
-    };
-    let base = PathBuf::from(base);
-    let mut candidates = BTreeSet::new();
-    if is_source_file(&base) {
-        insert_candidate(&base, files, &mut candidates);
-        if !candidates.is_empty() {
-            return candidates.into_iter().collect();
-        }
-        let extensions = match base.extension().and_then(|extension| extension.to_str()) {
-            Some("js") => Some(["ts", "tsx", "js", "jsx"].as_slice()),
-            Some("jsx") => Some(["tsx", "jsx"].as_slice()),
-            _ => None,
-        };
-        if let Some(extensions) = extensions {
-            for extension in extensions {
-                insert_candidate(&base.with_extension(extension), files, &mut candidates);
-            }
-            if !candidates.is_empty() {
-                return candidates.into_iter().collect();
-            }
-            let stem = base.with_extension("");
-            for extension in extensions {
-                insert_candidate(
-                    &stem.join("index").with_extension(extension),
-                    files,
-                    &mut candidates,
-                );
-            }
-        }
-    } else {
-        for extension in EXTENSIONS {
-            insert_candidate(&base.with_extension(extension), files, &mut candidates);
-            insert_candidate(
-                &base.join("index").with_extension(extension),
-                files,
-                &mut candidates,
-            );
-        }
-    }
-    candidates.into_iter().collect()
-}
-
-fn insert_candidate(path: &Path, files: &BTreeSet<String>, candidates: &mut BTreeSet<String>) {
-    let key = path.to_string_lossy().replace('\\', "/");
-    if files.contains(&key) {
-        candidates.insert(key);
-    }
-}
-
 fn normalize_relative(path: &Path) -> Option<String> {
     let mut parts = Vec::new();
     for component in path.components() {
@@ -1417,24 +659,6 @@ fn normalize_relative(path: &Path) -> Option<String> {
         }
     }
     (!parts.is_empty()).then(|| parts.join("/"))
-}
-
-fn issue(
-    status: RelationshipStatus,
-    source: &str,
-    line: usize,
-    column: usize,
-    name: &str,
-    detail: &str,
-) -> RelationshipIssue {
-    RelationshipIssue {
-        status,
-        source: source.to_string(),
-        line,
-        column,
-        name: name.to_string(),
-        detail: detail.to_string(),
-    }
 }
 
 fn issue_order(left: &RelationshipIssue, right: &RelationshipIssue) -> std::cmp::Ordering {

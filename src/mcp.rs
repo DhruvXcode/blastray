@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use crate::{
     diff,
-    index::{Index, NO_SUPPORTED_SOURCE_FILES},
+    index::{Index, no_supported_source_files_message},
     query,
 };
 
@@ -58,7 +58,7 @@ impl Server {
             return error(&message);
         }
         if !index.has_supported_source_files() {
-            return text(NO_SUPPORTED_SOURCE_FILES.to_string());
+            return text(no_supported_source_files_message());
         }
         match query_fn(&index) {
             Ok(output) => text(output),

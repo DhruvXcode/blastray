@@ -57,7 +57,7 @@ fn answer_with_index(
 ) -> Result<String, String> {
     let index = index::Index::open(Path::new("."))?;
     if !index.has_supported_source_files() {
-        return Ok(index::NO_SUPPORTED_SOURCE_FILES.to_string());
+        return Ok(index::no_supported_source_files_message());
     }
     query_fn(&index)
 }

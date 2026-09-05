@@ -484,3 +484,32 @@ public Dart repository [dart-lang/language](https://github.com/dart-lang/languag
 at `91fa646beb384eaa41257f52e3b4ac9434504578` was used as the
 unsupported-language control. It receives: `No supported source files found.
 BlastRay currently indexes .ts, .tsx, .js, and .jsx.`
+
+## Mission 13 provider-boundary equivalence
+
+The pre-refactor `41e1ec7` binary and the provider-boundary binary were run
+against the same disposable combined fixture. `find`, `inspect`, `trace`, and
+`impact` outputs were byte-identical for direct imports, one-hop re-exports,
+same-class `this` calls, and constructor-bound calls. A controlled body edit
+also produced byte-identical `impact --diff` output.
+
+The pinned GitNexus reference remained exactly structurally equivalent:
+2,430 files, 9,376 symbols, 5,914 IMPORTS, 10,009 CALLS, 47,427 unresolved
+issues, and one ambiguous issue. A release build measured 6.962 s.
+
+Cold/warm measurements below use two disposable GitNexus copies with existing
+state removed; the second pair reverses run order to distinguish cache/host
+noise from the refactor. The provider enum adds one serialized tag per parsed
+file; it does not add a dependency or separate per-language cache.
+
+| metric | Mission 12 / pre-provider | Mission 13 |
+| --- | ---: | ---: |
+| cold `find analyze` (first order) | 4.465 s | 5.081 s |
+| cold `find analyze` (reversed order) | 4.422 s | 4.470 s |
+| warm `find analyze` | 0.310 s | 0.307 s |
+| cache size | 17,353,479 bytes | 17,363,199 bytes |
+| warm live-MCP `find("analyze")` | not re-baselined | 135 ms |
+
+The cold first-order outlier did not reproduce after reversal; warm behavior
+and structural counts were unchanged. These are single-machine measurements,
+not public performance claims.

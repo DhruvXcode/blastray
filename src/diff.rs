@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::index::{Graph, RelationshipIssue, is_source_file};
-use crate::parse::{SymbolDraft, parse_file};
+use crate::language::{SymbolFact, parse};
 use crate::query::reverse_impact;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -234,9 +234,9 @@ fn map_modified_file(
     let old_symbols = match git(root, &["show", &format!("HEAD:{path}")]) {
         Ok(source) => match String::from_utf8(source)
             .map_err(|_| "old source was not valid UTF-8".to_string())
-            .and_then(|source| parse_file(path, &source))
+            .and_then(|source| parse(path, &source))
         {
-            Ok(parsed) => Some(parsed.symbols),
+            Ok(parsed) => Some(parsed.symbols()),
             Err(error) => {
                 mapping
                     .incomplete
@@ -311,7 +311,7 @@ fn narrowest_current_symbol(graph: &Graph, symbols: &[usize], line: usize) -> Op
         })
 }
 
-fn narrowest_old_symbol(symbols: &[SymbolDraft], line: usize) -> Option<&SymbolDraft> {
+fn narrowest_old_symbol(symbols: &[SymbolFact], line: usize) -> Option<&SymbolFact> {
     symbols
         .iter()
         .filter(|symbol| symbol.line <= line && line <= symbol.end_line)
