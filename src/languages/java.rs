@@ -75,6 +75,22 @@ enum CallKind {
     Other,
 }
 
+#[derive(Clone, Copy)]
+enum DeclarationKind {
+    Class,
+    Interface,
+    Enum,
+}
+
+impl DeclarationKind {
+    fn symbol_kind(self) -> SymbolKind {
+        match self {
+            Self::Class => SymbolKind::Class,
+            Self::Interface | Self::Enum => SymbolKind::Type,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct TypeTarget {
     canonical: String,
@@ -113,11 +129,11 @@ pub(crate) fn parse(path: &str, source: &str) -> Result<ProviderParsedFile, Stri
     let mut cursor = root.walk();
     for child in root.named_children(&mut cursor) {
         match child.kind() {
-            "class_declaration" => add_type(&mut parsed, child, source, SymbolKind::Class),
-            "interface_declaration" | "enum_declaration" => {
-                // Interfaces and enums are type declarations, but not classes.
-                add_type(&mut parsed, child, source, SymbolKind::Type);
+            "class_declaration" => add_type(&mut parsed, child, source, DeclarationKind::Class),
+            "interface_declaration" => {
+                add_type(&mut parsed, child, source, DeclarationKind::Interface)
             }
+            "enum_declaration" => add_type(&mut parsed, child, source, DeclarationKind::Enum),
             "import_declaration" => {
                 if let Some(import) = import_draft(child, source) {
                     parsed.imports.push(import);
@@ -155,7 +171,12 @@ fn import_draft(node: Node<'_>, source: &str) -> Option<ImportDraft> {
     })
 }
 
-fn add_type(parsed: &mut ParsedFile, node: Node<'_>, source: &str, kind: SymbolKind) {
+fn add_type(
+    parsed: &mut ParsedFile,
+    node: Node<'_>,
+    source: &str,
+    declaration_kind: DeclarationKind,
+) {
     let Some(name) = field_text(node, "name", source) else {
         return;
     };
@@ -169,7 +190,7 @@ fn add_type(parsed: &mut ParsedFile, node: Node<'_>, source: &str, kind: SymbolK
         line: position.row + 1,
         end_line: node.end_position().row + 1,
         column: position.column + 1,
-        kind,
+        kind: declaration_kind.symbol_kind(),
         calls: Vec::new(),
         shadowed: BTreeSet::new(),
         owner: None,
@@ -179,7 +200,7 @@ fn add_type(parsed: &mut ParsedFile, node: Node<'_>, source: &str, kind: SymbolK
         is_varargs: false,
         owner_has_hierarchy: type_has_hierarchy,
     });
-    add_hierarchy_relationships(parsed, node, source, &canonical, kind);
+    add_hierarchy_relationships(parsed, node, source, &canonical, declaration_kind);
     let Some(body) = node.child_by_field_name("body") else {
         return;
     };
@@ -200,18 +221,37 @@ fn add_hierarchy_relationships(
     node: Node<'_>,
     source: &str,
     from: &str,
-    declaration_kind: SymbolKind,
+    declaration_kind: DeclarationKind,
 ) {
-    if declaration_kind == SymbolKind::Class {
+    if matches!(declaration_kind, DeclarationKind::Class) {
         if let Some(superclass) = node.child_by_field_name("superclass") {
             add_type_relationships(parsed, superclass, source, from, DependencyKind::Extends);
         }
         if let Some(interfaces) = node.child_by_field_name("interfaces") {
             add_type_relationships(parsed, interfaces, source, from, DependencyKind::Implements);
         }
-    } else if let Some(interfaces) = node.child_by_field_name("interfaces") {
-        add_type_relationships(parsed, interfaces, source, from, DependencyKind::Extends);
+    } else {
+        let (interfaces, kind) = match declaration_kind {
+            DeclarationKind::Interface => (
+                named_child(node, "extends_interfaces"),
+                DependencyKind::Extends,
+            ),
+            DeclarationKind::Enum => (
+                node.child_by_field_name("interfaces"),
+                DependencyKind::Implements,
+            ),
+            DeclarationKind::Class => unreachable!("classes were handled above"),
+        };
+        if let Some(interfaces) = interfaces {
+            add_type_relationships(parsed, interfaces, source, from, kind);
+        }
     }
+}
+
+fn named_child<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tree>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .find(|child| child.kind() == kind)
 }
 
 fn add_type_relationships(
@@ -964,6 +1004,26 @@ mod tests {
                 ("src/Example.java::State.tick", SymbolKind::Method),
             ]
         );
+    }
+
+    #[test]
+    fn preserves_interface_and_enum_hierarchy_kinds() {
+        let facts = resolved(&[(
+            "src/demo/Hierarchy.java",
+            "package demo; interface A {} interface B extends A {} enum E implements A { ONE; }",
+        )]);
+        let relationships = &facts["src/demo/Hierarchy.java"].relationships;
+        assert_eq!(relationships.len(), 2);
+        assert!(relationships.iter().any(|relationship| {
+            relationship.from == "src/demo/Hierarchy.java::B"
+                && relationship.to == "src/demo/Hierarchy.java::A"
+                && relationship.kind == DependencyKind::Extends
+        }));
+        assert!(relationships.iter().any(|relationship| {
+            relationship.from == "src/demo/Hierarchy.java::E"
+                && relationship.to == "src/demo/Hierarchy.java::A"
+                && relationship.kind == DependencyKind::Implements
+        }));
     }
 
     #[test]
