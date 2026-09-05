@@ -482,8 +482,8 @@ visible limit.
 The requested private Kael Chess clone was inaccessible (HTTP 403), so the
 public Dart repository [dart-lang/language](https://github.com/dart-lang/language)
 at `91fa646beb384eaa41257f52e3b4ac9434504578` was used as the
-unsupported-language control. It receives: `No supported source files found.
-BlastRay currently indexes .ts, .tsx, .js, and .jsx.`
+unsupported-language control. At that time it received: `No supported source
+files found. BlastRay currently indexes .ts, .tsx, .js, and .jsx.`
 
 ## Mission 13 provider-boundary equivalence
 
@@ -513,3 +513,52 @@ file; it does not add a dependency or separate per-language cache.
 The cold first-order outlier did not reproduce after reversal; warm behavior
 and structural counts were unchanged. These are single-machine measurements,
 not public performance claims.
+
+## Mission 14 Python-provider audit
+
+The release binary was built before and after adding only
+`tree-sitter-python 0.25.0`: 11,283,696 bytes -> 11,840,888 bytes. Four
+disposable shallow clones were indexed without installed dependencies or
+generated vendor state. The first release `find` creates the cache and the
+second validates it. Metrics are one-run wall-clock measurements.
+
+| repository | pinned commit | `.py` files | symbols (function/class/method) | imports | calls | unresolved | ambiguous | unresolved/symbol | cache bytes | cold | warm |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| [Requests](https://github.com/psf/requests) | `dae7ef63b4df6eded86637f251fc4e3a06c3b479` | 37 | 707 (146/72/489) | 60 | 168 | 2,727 | 20 | 3.86 | 775,434 | 0.177 s | 0.049 s |
+| [Click](https://github.com/pallets/click) | `36baa15ff831b939a22bc527cd76ce653ef6f66d` | 79 | 1,321 (787/113/421) | 43 | 321 | 4,247 | 14 | 3.22 | 1,226,274 | 0.340 s | 0.061 s |
+| [Starlette](https://github.com/encode/starlette) | `c9176b57af56eb0f0906e47e0eea95de43bbf38f` | 84 | 1,460 (772/166/522) | 0 | 201 | 6,714 | 0 | 4.60 | 1,753,662 | 0.306 s | 0.045 s |
+| [Pytest](https://github.com/pytest-dev/pytest) | `51e9a9f148cd2509a31e3fa0d2b1b3204c2b0dd7` | 272 | 6,364 (2,002/544/3,818) | 18 | 1,454 | 27,626 | 13 | 4.34 | 7,857,398 | 0.723 s | 0.114 s |
+
+Top unresolved categories were explicit uncertainty, not missing graph edges:
+arbitrary/dynamic receivers dominated all four; unresolved external or absolute
+imports followed. Simple import-line census respectively found relative explicit
+imports in Requests/Click/Starlette/Pytest of 78/191/0/66 lines, while absolute
+`from` imports were 133/207/666/2,448. Wildcard imports were absent except one
+Pytest line, so they remain unsupported.
+
+The first ten deterministic CALLS edges from each repository were source
+checked (40 total): every call site named the recorded target and every target
+definition existed at its canonical file/symbol; verified 40, incorrect 0,
+uncertain 0. The sample includes direct local calls, explicit relative imports,
+and same-class methods. This is a correctness sample, not a coverage claim.
+
+Live release MCP sessions used the unchanged four tools on Requests
+(`HTTPAdapter.build_response -> extract_cookies_to_jar`), Click
+(`blur_cmd -> copy_filename`), and Starlette
+(`make_payload -> make_json_payload`). Each workflow found, inspected, traced,
+and impacted confirmed structure with call-site evidence. Package/absolute
+imports and arbitrary receivers were the visible limits. An isolated Codex
+read-only run did not load its temporary MCP registration, so it was not used
+as acceptance evidence; direct MCP protocol sessions were successful.
+
+Python `impact --diff` tests map both a function-body edit and a method-body
+edit to the narrowest common symbol and traverse their confirmed callers. A
+release mixed JS/TS+Python fixture indexed 2 files, 4 symbols, and 2 CALLS in
+1,641 us cold / 262 us warm with a 1,011-byte single cache.
+
+GitNexus contains 244 `.py` files. Its JS/TS subset remains exactly the
+Mission 13 baseline: 2,430 files, 9,376 symbols, 5,914 IMPORTS, 10,009 CALLS,
+47,427 unresolved issues, and one ambiguous issue. The combined two-provider
+index is 2,674 files, 9,823 symbols, 5,933 IMPORTS, 10,028 CALLS, 47,984
+unresolved issues, and one ambiguous issue. A release cold/warm `find analyze`
+on a disposable copy measured 4.156 s / 0.305 s with a 17,684,843-byte cache.

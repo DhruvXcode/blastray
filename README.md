@@ -14,14 +14,16 @@ It provides four primitives:
 
 ## Status
 
-Mission 13 provides a deterministic TypeScript/JavaScript slice for `.ts`,
-`.tsx`, `.js`, and `.jsx` files, with a persistent local index and
-`impact --diff` for staged plus unstaged Git changes. It indexes named
-top-level functions, callable top-level `const` bindings, classes, and class
-methods; resolves only confirmed local or relative-imported function calls; and
-reports uncertainty instead of guessing. `find` is compact ranked lexical
-search, not semantic search. Direct `this.method()` calls resolve only to a
-uniquely matching method on the same indexed class.
+Mission 14 provides conservative JavaScript/TypeScript and Python slices for
+`.ts`, `.tsx`, `.js`, `.jsx`, and `.py` files, with a persistent local index
+and `impact --diff` for staged plus unstaged Git changes. It indexes named
+top-level functions, callable top-level `const` bindings, classes, and direct
+class methods; resolves only confirmed local or relative-imported function
+calls; and reports uncertainty instead of guessing. Python currently resolves
+only explicit relative `from .module import function` bindings and direct
+same-class instance-method calls. `find` is compact ranked lexical search, not
+semantic search. Direct `this.method()` calls resolve only to a uniquely
+matching method on the same indexed class.
 Relative one-hop named re-exports, including aliases, resolve only when they
 uniquely expose an already indexed callable; calls retain the declaration's
 original canonical identity. Explicit local export lists can also forward one

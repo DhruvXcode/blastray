@@ -258,3 +258,31 @@ fn direct_line_mapping_is_stable_for_repeated_runs() {
     repo.write("src/a.ts", "export function a() { return; }\n");
     assert_eq!(repo.impact(), repo.impact());
 }
+
+#[test]
+fn maps_python_function_and_method_edits_to_common_symbol_spans() {
+    let function = Repo::new(&[(
+        "pkg/main.py",
+        "def leaf():\n    pass\n\ndef entry():\n    leaf()\n",
+    )]);
+    function.write(
+        "pkg/main.py",
+        "def leaf():\n    return 1\n\ndef entry():\n    leaf()\n",
+    );
+    let function_output = function.impact();
+    assert!(function_output.contains("pkg/main.py::leaf"));
+    assert!(function_output.contains("pkg/main.py::entry"));
+
+    let method = Repo::new(&[(
+        "pkg/worker.py",
+        "class Worker:\n    def leaf(self):\n        pass\n\n    def entry(self):\n        self.leaf()\n",
+    )]);
+    method.write(
+        "pkg/worker.py",
+        "class Worker:\n    def leaf(self):\n        return 1\n\n    def entry(self):\n        self.leaf()\n",
+    );
+    let method_output = method.impact();
+    assert!(method_output.contains("pkg/worker.py::Worker.leaf"));
+    assert!(method_output.contains("pkg/worker.py::Worker.entry"));
+    assert!(!method_output.contains("Changed symbols:\n- pkg/worker.py::Worker\n"));
+}

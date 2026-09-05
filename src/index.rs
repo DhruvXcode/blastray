@@ -19,7 +19,7 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 8;
+const CACHE_SCHEMA: u32 = 9;
 
 pub fn no_supported_source_files_message() -> String {
     language::no_supported_source_files_message()
@@ -1676,6 +1676,101 @@ mod tests {
         );
         let persistent = Index::open(&repo.0).unwrap();
         assert_equivalent(&persistent, &full);
+    }
+
+    #[test]
+    fn python_refresh_imports_and_persistence_match_a_full_build() {
+        let repo = Repo::new(&[
+            ("pkg/util.py", "def leaf():\n    pass\n"),
+            (
+                "pkg/main.py",
+                "from .util import leaf\n\ndef entry():\n    leaf()\n",
+            ),
+        ]);
+        let mut index = Index::build(&repo.0).unwrap();
+        assert!(
+            query::trace(index.graph(), "pkg/main.py::entry", "pkg/util.py::leaf")
+                .unwrap()
+                .contains("Known CALLS path")
+        );
+        repo.write(
+            "pkg/main.py",
+            "from .util import leaf\n\ndef entry():\n    leaf()\n    leaf()\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("pkg/main.py")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        let entry = index.graph().symbol_candidates("pkg/main.py::entry")[0];
+        let leaf = index.graph().symbol_candidates("pkg/util.py::leaf")[0];
+        assert_eq!(index.graph().call_sites(entry, leaf).len(), 2);
+
+        repo.write("pkg/util.py", "def renamed():\n    pass\n");
+        assert_eq!(
+            index.refresh(Path::new("pkg/util.py")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            query::inspect(index.graph(), "pkg/main.py::entry")
+                .unwrap()
+                .contains("imported Python binding is not uniquely resolved")
+        );
+        let persistent = Index::open(&repo.0).unwrap();
+        assert_equivalent(&persistent, &full);
+    }
+
+    #[test]
+    fn mixed_js_ts_and_python_files_share_one_graph_and_refresh_independently() {
+        let repo = Repo::new(&[
+            (
+                "frontend.ts",
+                "export function uiLeaf() {}\nexport function uiEntry() { uiLeaf(); }\n",
+            ),
+            (
+                "backend.py",
+                "def api_leaf():\n    pass\n\ndef api_entry():\n    api_leaf()\n",
+            ),
+        ]);
+        let mut index = Index::build(&repo.0).unwrap();
+        assert_eq!(index.graph().files.len(), 2);
+        assert!(query::find(index.graph(), "uiEntry").contains("frontend.ts::uiEntry"));
+        assert!(query::find(index.graph(), "api_entry").contains("backend.py::api_entry"));
+
+        repo.write(
+            "backend.py",
+            "def api_leaf():\n    pass\n\ndef api_entry():\n    api_leaf()\n    api_leaf()\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("backend.py")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            query::inspect(index.graph(), "frontend.ts::uiEntry")
+                .unwrap()
+                .contains("frontend.ts::uiLeaf")
+        );
+
+        repo.write(
+            "frontend.ts",
+            "export function uiLeaf() {}\nexport function uiNext() { uiLeaf(); }\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("frontend.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            query::inspect(index.graph(), "backend.py::api_entry")
+                .unwrap()
+                .contains("backend.py::api_leaf")
+        );
     }
 
     #[test]

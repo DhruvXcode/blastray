@@ -115,3 +115,6 @@
   type, object-member, or external-package semantics.
   Reference: Mission 11 census; `src/cli/analyze-watch.ts`,
   `src/cli/watch-queue.ts` in GitNexus `932d937`.
+## Mission 14 provider lesson
+- Finding: explicit relative Python imports were common in package-oriented repositories, while absolute imports require environment/package knowledge.
+  Why it matters: a filesystem-only provider can safely recover the former and must leave the latter explicit. Reference: Mission 14 OSS census.

@@ -642,8 +642,9 @@ pub(crate) fn resolve(
 ) -> BTreeMap<String, ResolvedFile> {
     let parsed: BTreeMap<String, &ParsedFile> = parsed
         .iter()
-        .map(|(path, file)| match file {
-            ProviderParsedFile::JsTs(file) => (path.clone(), file),
+        .filter_map(|(path, file)| match file {
+            ProviderParsedFile::JsTs(file) => Some((path.clone(), file)),
+            ProviderParsedFile::Python(_) => None,
         })
         .collect();
     let context = ResolveContext::new(&parsed);

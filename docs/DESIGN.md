@@ -133,3 +133,11 @@ message from registered extensions. The JS/TS provider owns its Tree-sitter
 grammar, AST extraction, module/export resolution, and receiver rules; index
 lifecycle, graph materialization, queries, diff orchestration, CLI, and MCP do
 not branch on JS/TS syntax.
+
+## Mission 14 boundary
+
+Python is the second compiled provider and emits the same common facts. It owns
+`.py` grammar selection, extraction, and conservative Python resolution; core
+indexing, graph/query/diff/MCP code remains language-independent. The first
+slice proves only top-level functions, classes/direct methods, explicit
+relative function imports, and direct same-class instance receiver calls.

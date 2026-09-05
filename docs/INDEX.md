@@ -109,3 +109,14 @@ core materializes only common symbol facts, imports, calls, issues, and call
 sites. Cache schema 8 invalidates pre-provider artifacts. A provider receives
 the full parsed repository for context but resolves only the paths selected by
 the incremental lifecycle.
+
+## Mission 14 Python facts
+
+Python parsed artifacts retain top-level Functions, Classes, direct Methods,
+their source spans, callable-body shadow facts, imports, and call sites. A
+relative `from .module import name` binding resolves only to one top-level
+Function in one `.py` or package `__init__.py` target. Direct calls and
+same-class calls through the declared first instance parameter use ordinary
+common CALLS evidence. Absolute/package and wildcard imports, arbitrary
+receivers, inheritance, and constructor ownership remain unresolved. Cache
+schema 9 invalidates pre-Python artifacts.

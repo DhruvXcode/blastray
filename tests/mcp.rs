@@ -193,7 +193,7 @@ fn stdio_server_explains_unsupported_repositories() {
     let unsupported = text(&mcp.call("find", json!({"query": "main"}))).to_string();
     assert_eq!(
         unsupported,
-        "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, and .jsx."
+        "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, .jsx, and .py."
     );
     assert_eq!(
         text(&mcp.call("impact", json!({"target": "anything"}))),
@@ -243,6 +243,11 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
         "src/constructor-use.ts",
         "import { Service } from './constructor-service.js';\nexport function constructorEntry() { const service = new Service(); service.run(); }\n",
     );
+    repo.write("pkg/util.py", "def python_leaf():\n    pass\n");
+    repo.write(
+        "pkg/main.py",
+        "from .util import python_leaf\n\ndef python_entry():\n    python_leaf()\n",
+    );
     let mut mcp = Mcp::start(&repo);
 
     let list = mcp.request("tools/list", json!({}));
@@ -291,6 +296,17 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
     );
     assert!(
         text(&mcp.call("impact", json!({"target": "src/a.ts::leaf"}))).contains("src/b.ts::entry")
+    );
+    assert!(
+        text(&mcp.call("find", json!({"query": "python_entry"})))
+            .contains("pkg/main.py::python_entry")
+    );
+    assert!(
+        text(&mcp.call(
+            "trace",
+            json!({"from": "pkg/main.py::python_entry", "to": "pkg/util.py::python_leaf"})
+        ))
+        .contains("Known CALLS path")
     );
     let worker_response = mcp.call("inspect", json!({"target": "src/worker.ts::Worker.entry"}));
     let worker = text(&worker_response);
@@ -369,6 +385,12 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
     let diff = mcp.call("impact", json!({"target": "@diff"}));
     assert!(text(&diff).contains("Diff impact: HEAD -> working tree"));
     assert_eq!(diff["result"]["isError"], false);
+
+    repo.write("pkg/util.py", "def python_next():\n    pass\n");
+    assert!(
+        text(&mcp.call("inspect", json!({"target": "pkg/main.py::python_entry"})))
+            .contains("imported Python binding is not uniquely resolved")
+    );
 
     repo.write(
         "src/b.ts",
