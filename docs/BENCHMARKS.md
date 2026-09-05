@@ -731,3 +731,61 @@ high level settings.” Find 2.0 returned `flags::parse`; Inspect 2.0 then gave
 the declaration/docstring, its confirmed `parse_low` callee, relevant imports,
 and explicit unsupported associated calls. That was enough to start in the
 correct parser layer without immediately opening or grepping the file.
+
+## Mission 21 impact-gap census and frozen evaluation
+
+A small source census used the pinned GitNexus TypeScript checkout, Kodegraf
+TypeScript checkout, and BlastRay's Java/TypeScript fixture. The leading missed
+change dependencies were declaration heritage contracts (classes implementing
+interfaces or extending bases), non-call type annotations/signatures, and
+imported values not called locally. The latter two are real change surfaces but
+would require type/name binding across many syntactic positions and are too
+easy to overclaim without compiler infrastructure. File-level IMPORTS were
+explicitly rejected: they do not prove that a dependent uses an arbitrary
+symbol in the imported file.
+
+The selected smallest slice is direct `EXTENDS`/`IMPLEMENTS` contracts. They
+matter for contract/signature changes, occur in both TypeScript and Java, and
+have a compact local proof: exactly one indexed target under existing
+provider-owned local/import resolution. Python/Rust/Go were observed but not
+selected because their inheritance/trait/interface semantics require broader
+runtime or compiler knowledge. Generic/qualified/wildcard/external and
+ambiguous heritage stays unresolved.
+
+The following frozen, source-inspected corpus was chosen before the resolver
+work. “Old” is the prior reverse-CALLS engine; all `no` cases have no call from
+the dependent to the contract, so a CALLS edge would have been false evidence.
+
+| source case | changed target | expected dependent | why real | old | Impact 2.0 | evidence |
+| --- | --- | --- | --- | ---: | ---: | --- |
+| fixture TS | `Store` | `ConcreteStore` | declared interface implementation | no | yes | IMPLEMENTS |
+| fixture TS | `BaseStore` | `ConcreteStore` | declared base class | no | yes | EXTENDS |
+| fixture TS | `ConcreteStore` | `SpecializedStore` | declared base class | no | yes | EXTENDS |
+| fixture Java | `Store` | `ConcreteStore` | declared interface implementation | no | yes | IMPLEMENTS |
+| fixture Java | `BaseStore` | `ConcreteStore` | declared superclass | no | yes | EXTENDS |
+| fixture Java | `ConcreteStore` | `SpecializedStore` | declared superclass | no | yes | EXTENDS |
+| GitNexus `contract-extractor.ts` | `ContractExtractor` | `GraphqlExtractor` | direct `implements ContractExtractor` declaration | no | yes | IMPLEMENTS |
+| GitNexus `logger.ts` | `Writable` | `MemoryWritable` | direct `extends Writable` declaration | no | boundary | external type omitted |
+| Kodegraf `commands/deps.ts` | `FormatterOptions` | `DepsOptions` | interface extension declaration | no | yes | EXTENDS |
+| Kodegraf `commands/impact.ts` | `FormatterOptions` | `ImpactOptions` | interface extension declaration | no | yes | EXTENDS |
+
+The external `Writable` case is retained as a negative control: it is a real
+dependency but cannot be proven repository-locally and must not appear. The
+new CLI/diff tests source-check the six fixture edges, including a diff that
+changes a TypeScript interface and reaches its implementer and transitive
+subclass. On the copied basic fixture, the release index emitted 4 `EXTENDS`
+and 3 `IMPLEMENTS` facts (alongside 10 CALLS) for 35 symbols; direct inspection
+confirmed each points from the declared child to its exact heritage target.
+On the pinned GitNexus source checkout it emitted 54 `EXTENDS` and 28
+`IMPLEMENTS` facts alongside 10,121 CALLS and 12,534 symbols. The first
+source-copy cold index took 8.984 s and produced a 33,861,553-byte cache on
+this environment; this includes the existing bounded discovery cache and is an
+environment-specific observation, not a public latency claim. The basic
+fixture's schema-15 cache is 24,164 bytes.
+
+Dogfood used the vague task “where is the store contract implemented?”:
+`find store` locates `Store`; `inspect src/hierarchy.ts::Store` supplies its
+definition; `impact` then returns `ConcreteStore -> IMPLEMENTS Store` and the
+transitive `SpecializedStore -> EXTENDS ConcreteStore`. The controlled diff
+test changes `Store` by adding a member and obtains those same confirmed
+dependents through `impact --diff`.

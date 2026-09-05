@@ -4,7 +4,7 @@ use std::process::Command;
 
 use crate::index::{Graph, RelationshipIssue, is_source_file};
 use crate::language::{SymbolFact, parse};
-use crate::query::reverse_impact;
+use crate::query::{dependency_evidence, reverse_impact};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ChangeKind {
@@ -182,7 +182,11 @@ pub fn impact(graph: &Graph, root: &Path) -> Result<String, String> {
         for (depth, symbols) in &traversal.by_depth {
             output.push_str(&format!("\nDepth {depth}:"));
             for symbol in symbols {
-                output.push_str(&format!("\n- {}", graph.symbols[*symbol].canonical));
+                output.push_str(&format!(
+                    "\n- {} [{}]",
+                    graph.symbols[symbol.symbol].canonical,
+                    dependency_evidence(graph, &symbol.via)
+                ));
             }
         }
     }

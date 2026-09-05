@@ -4,9 +4,10 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Node, Parser};
 
-use crate::index::{RelationshipIssue, RelationshipStatus, SymbolKind};
+use crate::index::{DependencyKind, RelationshipIssue, RelationshipStatus, SymbolKind};
 use crate::language::{
     ParsedFile as ProviderParsedFile, ProviderContext, ResolvedCall, ResolvedFile,
+    ResolvedRelationship,
 };
 
 pub(crate) const EXTENSIONS: &[&str] = &["java"];
@@ -17,6 +18,16 @@ pub(crate) struct ParsedFile {
     pub symbols: Vec<SymbolDraft>,
     package: String,
     imports: Vec<ImportDraft>,
+    relationships: Vec<RelationshipDraft>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct RelationshipDraft {
+    from: String,
+    target: String,
+    kind: DependencyKind,
+    line: usize,
+    column: usize,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -97,6 +108,7 @@ pub(crate) fn parse(path: &str, source: &str) -> Result<ProviderParsedFile, Stri
         symbols: Vec::new(),
         package,
         imports: Vec::new(),
+        relationships: Vec::new(),
     };
     let mut cursor = root.walk();
     for child in root.named_children(&mut cursor) {
@@ -167,6 +179,7 @@ fn add_type(parsed: &mut ParsedFile, node: Node<'_>, source: &str, kind: SymbolK
         is_varargs: false,
         owner_has_hierarchy: type_has_hierarchy,
     });
+    add_hierarchy_relationships(parsed, node, source, &canonical, kind);
     let Some(body) = node.child_by_field_name("body") else {
         return;
     };
@@ -180,6 +193,74 @@ fn add_type(parsed: &mut ParsedFile, node: Node<'_>, source: &str, kind: SymbolK
         type_has_hierarchy,
     );
     normalize_method_canonicals(parsed, &canonical);
+}
+
+fn add_hierarchy_relationships(
+    parsed: &mut ParsedFile,
+    node: Node<'_>,
+    source: &str,
+    from: &str,
+    declaration_kind: SymbolKind,
+) {
+    if declaration_kind == SymbolKind::Class {
+        if let Some(superclass) = node.child_by_field_name("superclass") {
+            add_type_relationships(parsed, superclass, source, from, DependencyKind::Extends);
+        }
+        if let Some(interfaces) = node.child_by_field_name("interfaces") {
+            add_type_relationships(parsed, interfaces, source, from, DependencyKind::Implements);
+        }
+    } else if let Some(interfaces) = node.child_by_field_name("interfaces") {
+        add_type_relationships(parsed, interfaces, source, from, DependencyKind::Extends);
+    }
+}
+
+fn add_type_relationships(
+    parsed: &mut ParsedFile,
+    node: Node<'_>,
+    source: &str,
+    from: &str,
+    kind: DependencyKind,
+) {
+    let mut names = Vec::new();
+    collect_direct_type_names(node, source, &mut names);
+    for (target, line, column) in names {
+        parsed.relationships.push(RelationshipDraft {
+            from: from.to_owned(),
+            target,
+            kind,
+            line,
+            column,
+        });
+    }
+}
+
+fn collect_direct_type_names(
+    node: Node<'_>,
+    source: &str,
+    names: &mut Vec<(String, usize, usize)>,
+) {
+    match node.kind() {
+        "type_identifier" | "identifier" => {
+            let position = node.start_position();
+            names.push((
+                text(node, source).to_owned(),
+                position.row + 1,
+                position.column + 1,
+            ));
+        }
+        "generic_type" => {
+            if let Some(name) = node.child_by_field_name("type") {
+                collect_direct_type_names(name, source, names);
+            }
+        }
+        "scoped_type_identifier" => {}
+        _ => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                collect_direct_type_names(child, source, names);
+            }
+        }
+    }
 }
 
 fn add_direct_methods(
@@ -588,6 +669,46 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> ResolvedFile {
             }
         }
     }
+    let mut relationships = Vec::new();
+    for draft in &file.relationships {
+        let mut targets = context
+            .types
+            .get(&(file.package.clone(), draft.target.clone()))
+            .cloned()
+            .unwrap_or_default();
+        targets.extend(
+            class_imports
+                .get(&draft.target)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        targets.sort_by(|left, right| left.canonical.cmp(&right.canonical));
+        targets.dedup_by(|left, right| left.canonical == right.canonical);
+        match targets.as_slice() {
+            [target] => relationships.push(ResolvedRelationship {
+                from: draft.from.clone(),
+                to: target.canonical.clone(),
+                kind: draft.kind,
+                line: draft.line,
+                column: draft.column,
+            }),
+            [] => issues.push(issue(
+                file,
+                draft.line,
+                draft.column,
+                &draft.target,
+                "the inherited Java type is not a uniquely indexed package-local or imported type",
+            )),
+            _ => issues.push(RelationshipIssue {
+                status: RelationshipStatus::Ambiguous,
+                source: file.path.clone(),
+                line: draft.line,
+                column: draft.column,
+                name: draft.target.clone(),
+                detail: "the inherited Java type is ambiguous".to_owned(),
+            }),
+        }
+    }
     let mut calls = Vec::new();
     for symbol in &file.symbols {
         if symbol.kind != SymbolKind::Method {
@@ -692,6 +813,7 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> ResolvedFile {
         imports: imports.into_iter().collect(),
         dependencies: Vec::new(),
         calls,
+        relationships,
         issues,
     }
 }

@@ -413,6 +413,7 @@ fn resolve_file(
         imports: Vec::new(),
         dependencies: dependencies.into_iter().collect(),
         calls,
+        relationships: Vec::new(),
         issues,
     }
 }

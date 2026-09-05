@@ -119,7 +119,7 @@ impl Server {
 
     #[tool(
         name = "impact",
-        description = "Use impact on a symbol before a risky structural edit. Use target=\"@diff\" after edits to inspect the current Git working tree's confirmed blast radius. Ordinary targets return confirmed reverse-CALLS impact."
+        description = "Use impact on a symbol before a risky structural edit. Use target=\"@diff\" after edits to inspect the current Git working tree's confirmed blast radius. Ordinary targets return only proven reverse dependencies: CALLS plus supported source-proven inheritance and implementation contracts."
     )]
     fn impact(
         &self,

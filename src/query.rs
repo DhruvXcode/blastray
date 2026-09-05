@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::index::{Graph, RelationshipIssue, SearchFact, Symbol};
+use crate::index::{DependencyEdge, DependencyKind, Graph, RelationshipIssue, SearchFact, Symbol};
 
 const MAX_TRAVERSAL: usize = 500;
 const FIND_LIMIT: usize = 20;
@@ -10,8 +10,14 @@ const INSPECT_SOURCE_LINES: usize = 24;
 const INSPECT_SOURCE_LINE_CHARS: usize = 180;
 
 pub(crate) struct ReverseImpact {
-    pub by_depth: BTreeMap<usize, Vec<usize>>,
+    pub by_depth: BTreeMap<usize, Vec<ImpactNode>>,
     pub truncated: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct ImpactNode {
+    pub symbol: usize,
+    pub via: DependencyEdge,
 }
 
 pub(crate) fn reverse_impact(graph: &Graph, roots: &BTreeSet<usize>) -> ReverseImpact {
@@ -23,13 +29,16 @@ pub(crate) fn reverse_impact(graph: &Graph, roots: &BTreeSet<usize>) -> ReverseI
         if visited.len() >= MAX_TRAVERSAL {
             break;
         }
-        for &caller in graph.callers(current) {
-            if visited.insert(caller) {
+        for edge in graph.dependents(current) {
+            if visited.insert(edge.from) {
                 by_depth
                     .entry(depth + 1)
                     .or_insert_with(Vec::new)
-                    .push(caller);
-                queue.push_back((caller, depth + 1));
+                    .push(ImpactNode {
+                        symbol: edge.from,
+                        via: edge.clone(),
+                    });
+                queue.push_back((edge.from, depth + 1));
             }
         }
     }
@@ -465,26 +474,28 @@ pub fn impact(graph: &Graph, target: &str) -> Result<String, String> {
 
     let direct = result.by_depth.get(&1).cloned().unwrap_or_default();
     let mut output = format!(
-        "Confirmed impact for {}\nDirect callers:",
+        "Confirmed impact for {}\nDirect confirmed dependents:",
         graph.symbols[target].canonical
     );
-    append_symbols(&mut output, graph, &direct);
+    append_impact_symbols(&mut output, graph, &direct);
     if !direct.is_empty() {
-        output.push_str("\nDirect caller evidence:");
-        for caller in &direct {
+        output.push_str("\nDirect dependency evidence:");
+        for dependent in &direct {
             output.push_str(&format!(
-                "\n- {}{}",
-                graph.symbols[*caller].canonical,
-                call_sites(graph, *caller, target)
+                "\n- {} -> {} {}{}",
+                graph.symbols[dependent.symbol].canonical,
+                dependent.via.kind.label(),
+                graph.symbols[dependent.via.to].canonical,
+                dependency_site(graph, &dependent.via)
             ));
         }
     }
-    output.push_str("\nTransitive callers:");
+    output.push_str("\nTransitive confirmed dependents:");
     let mut has_transitive = false;
     for (depth, symbols) in result.by_depth.range(2..) {
         has_transitive = true;
         output.push_str(&format!("\nDepth {depth}:"));
-        append_symbols(&mut output, graph, symbols);
+        append_impact_symbols(&mut output, graph, symbols);
     }
     if !has_transitive {
         output.push_str(" none");
@@ -503,9 +514,9 @@ pub fn impact(graph: &Graph, target: &str) -> Result<String, String> {
         .filter(|issue| issue.name == graph.symbols[target].name)
         .collect();
     if potentially_relevant.is_empty() {
-        output.push_str("\nCompleteness: no unresolved or ambiguous calls name-match this symbol.");
+        output.push_str("\nCompleteness: no unresolved or ambiguous supported relationship name-matches this symbol; dynamic, framework, type-system, and unsupported structural dependencies remain outside the proven graph.");
     } else {
-        output.push_str("\nCompleteness: conservative/incomplete; unresolved or ambiguous calls could conceal callers:");
+        output.push_str("\nCompleteness: conservative/incomplete; unresolved or ambiguous supported relationships could conceal dependents:");
         for issue in potentially_relevant {
             output.push_str(&format!(
                 "\n- {} {}:{}:{} '{}' — {}",
@@ -519,6 +530,37 @@ pub fn impact(graph: &Graph, target: &str) -> Result<String, String> {
         }
     }
     Ok(output)
+}
+
+fn append_impact_symbols(output: &mut String, graph: &Graph, symbols: &[ImpactNode]) {
+    if symbols.is_empty() {
+        output.push_str(" none");
+        return;
+    }
+    for node in symbols {
+        output.push_str(&format!(
+            "\n- {}",
+            symbol_line(graph, &graph.symbols[node.symbol])
+        ));
+    }
+}
+
+pub(crate) fn dependency_evidence(graph: &Graph, edge: &DependencyEdge) -> String {
+    format!(
+        "{} -> {} {}{}",
+        graph.symbols[edge.from].canonical,
+        edge.kind.label(),
+        graph.symbols[edge.to].canonical,
+        dependency_site(graph, edge)
+    )
+}
+
+fn dependency_site(graph: &Graph, edge: &DependencyEdge) -> String {
+    if edge.kind == DependencyKind::Calls {
+        return call_sites(graph, edge.from, edge.to);
+    }
+    let source = &graph.files[graph.symbols[edge.from].file].path;
+    format!(" [declared at {source}:{}:{}]", edge.line, edge.column)
 }
 
 fn select(graph: &Graph, selector: &str) -> Result<usize, String> {
@@ -545,19 +587,6 @@ fn issues_for<'a>(graph: &'a Graph, symbol: &Symbol) -> Vec<&'a RelationshipIssu
         .iter()
         .filter(|issue| issue.source == symbol.canonical)
         .collect()
-}
-
-fn append_symbols(output: &mut String, graph: &Graph, symbols: &[usize]) {
-    if symbols.is_empty() {
-        output.push_str(" none");
-        return;
-    }
-    for symbol in symbols {
-        output.push_str(&format!(
-            "\n- {}",
-            symbol_line(graph, &graph.symbols[*symbol])
-        ));
-    }
 }
 
 fn append_callers(output: &mut String, graph: &Graph, target: usize, callers: &[usize]) {

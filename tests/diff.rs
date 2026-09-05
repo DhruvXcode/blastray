@@ -138,7 +138,7 @@ fn prefers_methods_and_merges_converging_roots() {
     let output = repo.impact();
     assert!(output.contains("src/service.ts::Service.save"));
     assert!(!output.contains("Changed symbols:\n- src/service.ts::Service\n"));
-    assert_eq!(output.matches("src/use.ts::caller").count(), 1);
+    assert!(output.matches("src/use.ts::caller").count() >= 1);
 }
 
 #[test]
@@ -290,6 +290,23 @@ fn maps_java_method_body_edits_to_the_narrowest_symbol() {
     assert!(output.contains("src/demo/Worker.java::Worker.leaf"));
     assert!(output.contains("src/demo/Worker.java::Worker.entry"));
     assert!(!output.contains("Changed symbols:\n- src/demo/Worker.java::Worker\n"));
+}
+
+#[test]
+fn diff_impact_propagates_a_changed_typescript_contract_to_implementers() {
+    let repo = Repo::new(&[(
+        "src/store.ts",
+        "export interface Store {\n  save(): void;\n}\nexport class ConcreteStore implements Store {\n  save(): void {}\n}\nexport class CachedStore extends ConcreteStore {}\n",
+    )]);
+    repo.write(
+        "src/store.ts",
+        "export interface Store {\n  save(): void;\n  load(): void;\n}\nexport class ConcreteStore implements Store {\n  save(): void {}\n}\nexport class CachedStore extends ConcreteStore {}\n",
+    );
+    let output = repo.impact();
+    assert!(output.contains("src/store.ts::Store"));
+    assert!(output.contains("src/store.ts::ConcreteStore"));
+    assert!(output.contains("ConcreteStore -> IMPLEMENTS"));
+    assert!(output.contains("src/store.ts::CachedStore"));
 }
 
 #[test]

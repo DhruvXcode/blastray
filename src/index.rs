@@ -19,7 +19,7 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 14;
+const CACHE_SCHEMA: u32 = 15;
 
 pub fn no_supported_source_files_message() -> String {
     language::no_supported_source_files_message()
@@ -93,6 +93,34 @@ pub struct CallEdge {
     pub to: usize,
 }
 
+/// A source-proven, symbol-to-symbol dependency. Its direction is always
+/// dependent -> dependency, so impact walks it in reverse.
+#[derive(Clone, Debug)]
+pub struct DependencyEdge {
+    pub from: usize,
+    pub to: usize,
+    pub kind: DependencyKind,
+    pub line: usize,
+    pub column: usize,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub enum DependencyKind {
+    Calls,
+    Extends,
+    Implements,
+}
+
+impl DependencyKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Calls => "CALLS",
+            Self::Extends => "EXTENDS",
+            Self::Implements => "IMPLEMENTS",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct CallSite {
     pub line: usize,
@@ -131,10 +159,12 @@ pub struct Graph {
     pub defines: Vec<DefineEdge>,
     pub imports: Vec<ImportEdge>,
     pub calls: Vec<CallEdge>,
+    pub dependencies: Vec<DependencyEdge>,
     pub issues: Vec<RelationshipIssue>,
     imports_from: Vec<Vec<usize>>,
     callers_of: Vec<Vec<usize>>,
     callees_of: Vec<Vec<usize>>,
+    dependents_of: Vec<Vec<DependencyEdge>>,
     call_sites: BTreeMap<(usize, usize), Vec<CallSite>>,
     canonical_symbols: BTreeMap<String, Vec<usize>>,
     named_symbols: BTreeMap<String, Vec<usize>>,
@@ -170,6 +200,13 @@ impl Graph {
     pub fn call_sites(&self, from: usize, to: usize) -> &[CallSite] {
         self.call_sites
             .get(&(from, to))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn dependents(&self, symbol: usize) -> &[DependencyEdge] {
+        self.dependents_of
+            .get(symbol)
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
@@ -704,6 +741,7 @@ fn materialize_graph(
     let mut imports = Vec::new();
     let mut call_sites: BTreeMap<(usize, usize), Vec<CallSite>> = BTreeMap::new();
     let mut issues = Vec::new();
+    let mut dependency_facts = Vec::new();
     for (path, facts) in resolved {
         let from = file_ids[path];
         imports.extend(
@@ -723,6 +761,21 @@ fn materialize_graph(
                 });
             }
         }
+        dependency_facts.extend(facts.relationships.iter().filter_map(|relationship| {
+            let (Some([from]), Some([to])) = (
+                canonical_symbols.get(&relationship.from).map(Vec::as_slice),
+                canonical_symbols.get(&relationship.to).map(Vec::as_slice),
+            ) else {
+                return None;
+            };
+            Some(DependencyEdge {
+                from: *from,
+                to: *to,
+                kind: relationship.kind,
+                line: relationship.line,
+                column: relationship.column,
+            })
+        }));
         issues.extend(facts.issues.iter().cloned());
     }
     imports.sort_by_key(|edge| (edge.from, edge.to));
@@ -744,6 +797,38 @@ fn materialize_graph(
             .cmp(&symbols[right.from].canonical)
             .then_with(|| symbols[left.to].canonical.cmp(&symbols[right.to].canonical))
     });
+    let mut dependencies: Vec<DependencyEdge> = calls
+        .iter()
+        .map(|call| DependencyEdge {
+            from: call.from,
+            to: call.to,
+            kind: DependencyKind::Calls,
+            line: call_sites
+                .get(&(call.from, call.to))
+                .and_then(|sites| sites.first())
+                .map(|site| site.line)
+                .unwrap_or(0),
+            column: call_sites
+                .get(&(call.from, call.to))
+                .and_then(|sites| sites.first())
+                .map(|site| site.column)
+                .unwrap_or(0),
+        })
+        .collect();
+    dependencies.extend(dependency_facts);
+    dependencies.sort_by(|left, right| {
+        symbols[left.from]
+            .canonical
+            .cmp(&symbols[right.from].canonical)
+            .then_with(|| symbols[left.to].canonical.cmp(&symbols[right.to].canonical))
+            .then_with(|| left.kind.cmp(&right.kind))
+            .then_with(|| left.line.cmp(&right.line))
+            .then_with(|| left.column.cmp(&right.column))
+    });
+    dependencies.dedup_by(|left, right| {
+        (left.from, left.to, left.kind, left.line, left.column)
+            == (right.from, right.to, right.kind, right.line, right.column)
+    });
     issues.sort_by(issue_order);
 
     let mut imports_from = vec![Vec::new(); files.len()];
@@ -752,9 +837,13 @@ fn materialize_graph(
     }
     let mut callers_of = vec![Vec::new(); symbols.len()];
     let mut callees_of = vec![Vec::new(); symbols.len()];
+    let mut dependents_of = vec![Vec::new(); symbols.len()];
     for edge in &calls {
         callees_of[edge.from].push(edge.to);
         callers_of[edge.to].push(edge.from);
+    }
+    for edge in &dependencies {
+        dependents_of[edge.to].push(edge.clone());
     }
     for adjacency in callers_of.iter_mut().chain(callees_of.iter_mut()) {
         adjacency.sort_by(|left, right| symbols[*left].canonical.cmp(&symbols[*right].canonical));
@@ -764,16 +853,28 @@ fn materialize_graph(
         imports.sort_by(|left, right| files[*left].path.cmp(&files[*right].path));
         imports.dedup();
     }
+    for edges in &mut dependents_of {
+        edges.sort_by(|left, right| {
+            symbols[left.from]
+                .canonical
+                .cmp(&symbols[right.from].canonical)
+                .then_with(|| left.kind.cmp(&right.kind))
+                .then_with(|| left.line.cmp(&right.line))
+                .then_with(|| left.column.cmp(&right.column))
+        });
+    }
     Graph {
         files,
         symbols,
         defines,
         imports,
         calls,
+        dependencies,
         issues,
         imports_from,
         callers_of,
         callees_of,
+        dependents_of,
         call_sites,
         canonical_symbols,
         named_symbols,
@@ -801,11 +902,14 @@ fn search_facts(path: &str, source: &str, symbols: &[SymbolFact]) -> Vec<SearchF
             let end_line = symbol.end_line.saturating_sub(1);
             let context_start = start_line.saturating_sub(4);
             let start = *line_starts.get(context_start).unwrap_or(&0);
-            let end = line_starts
-                .get(end_line.saturating_add(1))
-                .copied()
-                .unwrap_or(source.len())
-                .min(start.saturating_add(12_000));
+            let end = char_boundary_before(
+                source,
+                line_starts
+                    .get(end_line.saturating_add(1))
+                    .copied()
+                    .unwrap_or(source.len())
+                    .min(start.saturating_add(12_000)),
+            );
             let declaration_end = line_starts
                 .get(start_line.saturating_add(3))
                 .copied()
@@ -837,6 +941,14 @@ fn search_facts(path: &str, source: &str, symbols: &[SymbolFact]) -> Vec<SearchF
             }
         })
         .collect()
+}
+
+fn char_boundary_before(source: &str, mut index: usize) -> usize {
+    index = index.min(source.len());
+    while index > 0 && !source.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
 }
 
 fn line_starts(source: &str) -> Vec<usize> {
@@ -1731,8 +1843,10 @@ mod tests {
         assert!(trace.contains("Call-site evidence:"));
         assert!(trace.contains("src/a.ts::entry -> src/a.ts::middle [call at src/a.ts:3:"));
         let impact = query::impact(index.graph(), "leaf").unwrap();
-        assert!(impact.contains("Direct caller evidence:"));
-        assert!(impact.contains("src/a.ts::middle [calls at src/a.ts:2:28, src/a.ts:2:36]"));
+        assert!(impact.contains("Direct dependency evidence:"));
+        assert!(impact.contains(
+            "src/a.ts::middle -> CALLS src/a.ts::leaf [calls at src/a.ts:2:28, src/a.ts:2:36]"
+        ));
     }
 
     #[test]

@@ -199,3 +199,26 @@ call sites, imports, and unresolved boundaries remain graph facts. A small
 `Likely relevant tests` section may use test-path/name proximity or confirmed
 call-neighborhood evidence, and is explicitly relevance context—not a TESTS
 edge or structural claim.
+
+## Mission 21 impact propagation
+
+Impact traverses a provider-neutral set of source-proven symbol dependencies,
+always directed `dependent -> dependency`. `CALLS` remains a confirmed call-flow
+fact used by `trace`; `EXTENDS` and `IMPLEMENTS` are impact-only structural
+contract facts. Reverse traversal returns direct and transitive dependents with
+the relationship kind and source location that admitted each symbol.
+
+Only a provider may emit a dependency fact. The common graph, impact, diff,
+CLI, and MCP layers do not infer language semantics. TypeScript emits a fact
+only for a direct class/interface heritage name that resolves uniquely to an
+indexed same-file or direct relative-imported type. Java applies the analogous
+rule to a simple superclass/interface name uniquely resolved in its declared
+package or an explicit repository-local import. Ambiguous, external, wildcard,
+qualified, generic-argument, framework, runtime, and type-system-dispatch
+relationships remain boundaries. File IMPORTS and discovery relevance never
+enter impact.
+
+Completeness therefore describes only the supported proven-dependency subset:
+it lists target-name-relevant unresolved/ambiguous facts when present and
+otherwise explicitly retains the dynamic/unsupported boundary. `impact --diff`
+uses the same traversal after its existing conservative changed-symbol mapping.

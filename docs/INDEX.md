@@ -170,3 +170,18 @@ comments/docstrings, string literals, compact body terms, and test context.
 They are rebuilt from current source during cold build and the same existing
 file refresh path replaces them after an edit. They are lookup evidence only,
 not nodes or relationships. Schema 14 invalidates prior caches.
+
+## Mission 21 dependency facts
+
+The resolved provider fact now carries `ResolvedRelationship` records with a
+canonical source/target, `DependencyKind`, and one-based source location. The
+materialized graph combines those records with existing CALLS into sorted
+`DependencyEdge` reverse adjacency; impact uses that generic adjacency while
+trace continues to use CALLS adjacency only. Current additional kinds are
+`EXTENDS` and `IMPLEMENTS`. They are not inferred from file IMPORTS.
+
+TypeScript parsed artifacts retain direct class/interface heritage drafts;
+Java artifacts retain direct superclass/interface drafts. Their providers emit
+facts only after unique local/relative-import (TypeScript) or
+package/explicit-import (Java) type resolution. Cache schema 15 invalidates
+all older artifacts and safely rebuilds them.

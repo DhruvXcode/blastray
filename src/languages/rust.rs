@@ -598,6 +598,8 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> ResolvedFile {
     result.imports.dedup();
     result.calls.sort();
     result.calls.dedup();
+    result.relationships.sort();
+    result.relationships.dedup();
     result.issues.sort_by(issue_order);
     result
 }

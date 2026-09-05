@@ -184,11 +184,36 @@ fn trace_follows_resolved_calls() {
 #[test]
 fn impact_walks_reverse_calls() {
     let output = stdout(&["impact", "src/local.ts::leaf"]);
-    assert!(output.contains("Direct callers:"));
+    assert!(output.contains("Direct confirmed dependents:"));
     assert!(output.contains("src/local.ts::middle"));
     assert!(output.contains("Depth 2:"));
     assert!(output.contains("src/local.ts::entry"));
     assert!(output.contains("src/cross.ts::cross"));
+}
+
+#[test]
+fn impact_walks_proven_typescript_hierarchy_dependencies() {
+    let output = stdout(&["impact", "src/hierarchy.ts::Store"]);
+    assert!(output.contains("Direct confirmed dependents:"));
+    assert!(output.contains("src/hierarchy.ts::ConcreteStore"));
+    assert!(output.contains("ConcreteStore -> IMPLEMENTS"));
+    assert!(output.contains("Depth 2:"));
+    assert!(output.contains("src/hierarchy.ts::SpecializedStore"));
+}
+
+#[test]
+fn impact_walks_proven_relative_imported_typescript_contracts() {
+    let output = stdout(&["impact", "src/base-contract.ts::Persisted"]);
+    assert!(output.contains("src/import-hierarchy.ts::ImportedStore"));
+    assert!(output.contains("ImportedStore -> IMPLEMENTS src/base-contract.ts::Persisted"));
+}
+
+#[test]
+fn impact_walks_proven_java_hierarchy_dependencies() {
+    let output = stdout(&["impact", "src/Hierarchy.java::Store"]);
+    assert!(output.contains("src/Hierarchy.java::ConcreteStore"));
+    assert!(output.contains("ConcreteStore -> IMPLEMENTS"));
+    assert!(output.contains("src/Hierarchy.java::SpecializedStore"));
 }
 
 #[test]

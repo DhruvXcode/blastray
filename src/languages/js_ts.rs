@@ -4,9 +4,10 @@ use std::path::{Component, Path, PathBuf};
 
 use tree_sitter::{Language, Node, Parser};
 
-use crate::index::{RelationshipIssue, RelationshipStatus, SymbolKind};
+use crate::index::{DependencyKind, RelationshipIssue, RelationshipStatus, SymbolKind};
 use crate::language::{
     ParsedFile as ProviderParsedFile, ProviderContext, ResolvedCall, ResolvedFile,
+    ResolvedRelationship,
 };
 
 pub(crate) const EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx"];
@@ -18,6 +19,16 @@ pub(crate) struct ParsedFile {
     pub imports: Vec<ImportDraft>,
     pub local_exports: Vec<LocalExportDraft>,
     pub reexports: Vec<ReexportDraft>,
+    pub relationships: Vec<RelationshipDraft>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct RelationshipDraft {
+    from: String,
+    target: String,
+    kind: DependencyKind,
+    line: usize,
+    column: usize,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -123,6 +134,7 @@ pub(crate) fn parse_file(path: &str, source: &str) -> Result<ParsedFile, String>
         imports: Vec::new(),
         local_exports: Vec::new(),
         reexports: Vec::new(),
+        relationships: Vec::new(),
     };
     let mut cursor = tree.root_node().walk();
 
@@ -131,6 +143,7 @@ pub(crate) fn parse_file(path: &str, source: &str) -> Result<ParsedFile, String>
             "import_statement" => parsed.imports.push(import_draft(child, source)),
             "function_declaration" => add_function(&mut parsed, child, source, false, false),
             "class_declaration" => add_class(&mut parsed, child, source, false, false),
+            "interface_declaration" => add_type(&mut parsed, child, source, false),
             "lexical_declaration" | "variable_declaration" => {
                 add_variable_callables(&mut parsed, child, source, false)
             }
@@ -167,6 +180,7 @@ fn add_export(parsed: &mut ParsedFile, node: Node<'_>, source: &str) {
         match child.kind() {
             "function_declaration" => add_function(parsed, child, source, true, default_export),
             "class_declaration" => add_class(parsed, child, source, true, default_export),
+            "interface_declaration" => add_type(parsed, child, source, true),
             "lexical_declaration" | "variable_declaration" => {
                 add_variable_callables(parsed, child, source, true)
             }
@@ -351,6 +365,7 @@ fn add_class(
         receiver_bindings: Vec::new(),
         shadowed: BTreeSet::new(),
     });
+    add_hierarchy_relationships(parsed, node, source, &name);
 
     let Some(body) = node.child_by_field_name("body") else {
         return;
@@ -360,6 +375,87 @@ fn add_class(
         if child.kind() == "method_definition" {
             add_method(parsed, &name, child, source);
         }
+    }
+}
+
+fn add_type(parsed: &mut ParsedFile, node: Node<'_>, source: &str, exported: bool) {
+    let Some(name) = field_text(node, "name", source) else {
+        return;
+    };
+    let position = node.start_position();
+    parsed.symbols.push(SymbolDraft {
+        canonical: format!("{}::{name}", parsed.path),
+        name: name.clone(),
+        file: parsed.path.clone(),
+        line: position.row + 1,
+        end_line: node.end_position().row + 1,
+        column: position.column + 1,
+        kind: SymbolKind::Type,
+        exported,
+        default_export: false,
+        is_static: false,
+        calls: Vec::new(),
+        receiver_bindings: Vec::new(),
+        shadowed: BTreeSet::new(),
+    });
+    add_hierarchy_relationships(parsed, node, source, &name);
+}
+
+fn add_hierarchy_relationships(parsed: &mut ParsedFile, node: Node<'_>, source: &str, name: &str) {
+    let from = format!("{}::{name}", parsed.path);
+    let mut descendants = Vec::new();
+    let mut cursor = node.walk();
+    descendants.extend(node.named_children(&mut cursor));
+    for child in descendants {
+        match child.kind() {
+            "class_heritage" => {
+                let mut clauses = child.walk();
+                for clause in child.named_children(&mut clauses) {
+                    let kind = if clause.kind() == "implements_clause" {
+                        DependencyKind::Implements
+                    } else {
+                        DependencyKind::Extends
+                    };
+                    add_clause_relationships(parsed, clause, source, &from, kind);
+                }
+            }
+            "extends_type_clause" => {
+                add_clause_relationships(parsed, child, source, &from, DependencyKind::Extends)
+            }
+            _ => {}
+        }
+    }
+}
+
+fn add_clause_relationships(
+    parsed: &mut ParsedFile,
+    clause: Node<'_>,
+    source: &str,
+    from: &str,
+    kind: DependencyKind,
+) {
+    let mut cursor = clause.walk();
+    for candidate in clause.named_children(&mut cursor) {
+        let name = direct_type_name(candidate, source);
+        let Some(target) = name else { continue };
+        let position = candidate.start_position();
+        parsed.relationships.push(RelationshipDraft {
+            from: from.to_owned(),
+            target,
+            kind,
+            line: position.row + 1,
+            column: position.column + 1,
+        });
+    }
+}
+
+fn direct_type_name(node: Node<'_>, source: &str) -> Option<String> {
+    match node.kind() {
+        "type_identifier" | "identifier" => Some(text(node, source).to_owned()),
+        "generic_type" => node
+            .child_by_field_name("name")
+            .and_then(|name| direct_type_name(name, source)),
+        _ => None,
     }
 }
 
@@ -667,6 +763,8 @@ struct ResolveContext {
     local_functions: BTreeMap<(String, String), Vec<String>>,
     local_classes: BTreeMap<(String, String), Vec<String>>,
     exported_classes: BTreeMap<(String, String, bool), Vec<String>>,
+    local_types: BTreeMap<(String, String), Vec<String>>,
+    exported_types: BTreeMap<(String, String, bool), Vec<String>>,
     this_methods: BTreeMap<(String, String, String, bool), Vec<String>>,
     exports: BTreeMap<(String, String, bool), Vec<String>>,
     ambiguous_exports: BTreeSet<(String, String, bool)>,
@@ -680,6 +778,8 @@ impl ResolveContext {
             local_functions: BTreeMap::new(),
             local_classes: BTreeMap::new(),
             exported_classes: BTreeMap::new(),
+            local_types: BTreeMap::new(),
+            exported_types: BTreeMap::new(),
             this_methods: BTreeMap::new(),
             exports: BTreeMap::new(),
             ambiguous_exports: BTreeSet::new(),
@@ -721,6 +821,27 @@ impl ResolveContext {
                     if symbol.default_export {
                         context
                             .exported_classes
+                            .entry((file.path.clone(), String::new(), true))
+                            .or_default()
+                            .push(symbol.canonical.clone());
+                    }
+                }
+                if matches!(symbol.kind, SymbolKind::Class | SymbolKind::Type) {
+                    context
+                        .local_types
+                        .entry((file.path.clone(), symbol.name.clone()))
+                        .or_default()
+                        .push(symbol.canonical.clone());
+                    if symbol.exported {
+                        context
+                            .exported_types
+                            .entry((file.path.clone(), symbol.name.clone(), false))
+                            .or_default()
+                            .push(symbol.canonical.clone());
+                    }
+                    if symbol.default_export {
+                        context
+                            .exported_types
                             .entry((file.path.clone(), String::new(), true))
                             .or_default()
                             .push(symbol.canonical.clone());
@@ -874,6 +995,7 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> ResolvedFile {
     for reexport in &file.reexports {
         resolve_reexport_dependency(reexport, file, context, &mut result);
     }
+    resolve_hierarchy_relationships(file, context, &mut result);
     for draft in &file.symbols {
         if context
             .canonical_symbols
@@ -963,8 +1085,90 @@ fn resolve_file(file: &ParsedFile, context: &ResolveContext) -> ResolvedFile {
     result.imports.dedup();
     result.calls.sort();
     result.calls.dedup();
+    result.relationships.sort();
+    result.relationships.dedup();
     result.issues.sort_by(issue_order);
     result
+}
+
+fn resolve_hierarchy_relationships(
+    file: &ParsedFile,
+    context: &ResolveContext,
+    result: &mut ResolvedFile,
+) {
+    for draft in &file.relationships {
+        let (mut candidates, mut ambiguous) = hierarchy_targets(file, &draft.target, context);
+        candidates.sort();
+        candidates.dedup();
+        if candidates.len() > 1 {
+            ambiguous = true;
+        }
+        match candidates.as_slice() {
+            [target] if !ambiguous => result.relationships.push(ResolvedRelationship {
+                from: draft.from.clone(),
+                to: target.clone(),
+                kind: draft.kind,
+                line: draft.line,
+                column: draft.column,
+            }),
+            _ => result.issues.push(issue(
+                if ambiguous {
+                    RelationshipStatus::Ambiguous
+                } else {
+                    RelationshipStatus::Unresolved
+                },
+                &draft.from,
+                draft.line,
+                draft.column,
+                &draft.target,
+                if ambiguous {
+                    "the inherited TypeScript type is not uniquely resolved"
+                } else {
+                    "the inherited TypeScript type is not a uniquely indexed local or relative imported type"
+                },
+            )),
+        }
+    }
+}
+
+fn hierarchy_targets(
+    file: &ParsedFile,
+    name: &str,
+    context: &ResolveContext,
+) -> (Vec<String>, bool) {
+    let mut candidates = context
+        .local_types
+        .get(&(file.path.clone(), name.to_owned()))
+        .cloned()
+        .unwrap_or_default();
+    let mut ambiguous = false;
+    for import in &file.imports {
+        let source_candidates = module_candidates(&file.path, &import.module, &context.files);
+        for binding in &import.bindings {
+            if binding.local() != name {
+                continue;
+            }
+            if source_candidates.len() > 1 {
+                ambiguous = true;
+                continue;
+            }
+            let [source] = source_candidates.as_slice() else {
+                continue;
+            };
+            let key = match binding {
+                ImportBinding::Named { imported, .. } => (source.clone(), imported.clone(), false),
+                ImportBinding::Default { .. } => (source.clone(), String::new(), true),
+            };
+            candidates.extend(
+                context
+                    .exported_types
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    (candidates, ambiguous)
 }
 
 fn resolve_constructor_member_call(

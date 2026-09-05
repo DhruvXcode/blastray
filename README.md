@@ -28,6 +28,12 @@ source evidence to suggest a small set of places to inspect.
 `inspect` returns a compact definition slice alongside confirmed callers,
 callees, call-site evidence, imports, and any relevant unresolved boundaries.
 
+`impact` walks only source-proven symbol dependencies in reverse. Alongside
+confirmed `CALLS`, TypeScript and Java currently contribute exact local or
+relative/imported `EXTENDS` and `IMPLEMENTS` contracts, with declaration-site
+evidence. File imports, text matches, framework conventions, and unresolved
+types never become impact edges.
+
 ## MCP
 
 `blastray mcp` is a stdio MCP server. Configure an MCP-capable client to launch it in the repository working directory. It exposes exactly `find`, `inspect`, `trace`, and `impact`; `impact` accepts `@diff` for working-tree impact.

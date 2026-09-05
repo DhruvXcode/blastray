@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::index::{RelationshipIssue, SymbolKind};
+use crate::index::{DependencyKind, RelationshipIssue, SymbolKind};
 use crate::languages::go;
 use crate::languages::java;
 use crate::languages::js_ts;
@@ -96,7 +96,17 @@ pub(crate) struct ResolvedFile {
     pub imports: Vec<String>,
     pub dependencies: Vec<String>,
     pub calls: Vec<ResolvedCall>,
+    pub relationships: Vec<ResolvedRelationship>,
     pub issues: Vec<RelationshipIssue>,
+}
+
+#[derive(Clone, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub(crate) struct ResolvedRelationship {
+    pub from: String,
+    pub to: String,
+    pub kind: DependencyKind,
+    pub line: usize,
+    pub column: usize,
 }
 
 #[derive(Clone, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
