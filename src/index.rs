@@ -19,7 +19,7 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 10;
+const CACHE_SCHEMA: u32 = 11;
 
 pub fn no_supported_source_files_message() -> String {
     language::no_supported_source_files_message()
@@ -177,6 +177,8 @@ pub enum RefreshKind {
 pub struct Index {
     root: PathBuf,
     hashes: BTreeMap<String, [u8; 32]>,
+    context_hashes: BTreeMap<String, [u8; 32]>,
+    context: language::ProviderContext,
     parsed: BTreeMap<String, ParsedFile>,
     resolved: BTreeMap<String, ResolvedFile>,
     graph: Graph,
@@ -188,7 +190,8 @@ impl Index {
             .canonicalize()
             .map_err(|error| format!("cannot read repository root {}: {error}", root.display()))?;
         let hashes = source_hashes(&root)?;
-        Self::build_with_hashes(root, hashes)
+        let (context_hashes, context) = provider_context(&root)?;
+        Self::build_with_hashes(root, hashes, context_hashes, context)
     }
 
     pub fn open(root: &Path) -> Result<Self, String> {
@@ -198,7 +201,11 @@ impl Index {
         add_git_exclude(&root);
         let mut index = match Self::load(&root) {
             Some(index) => index,
-            None => return Self::build_and_persist(root.clone(), source_hashes(&root)?),
+            None => {
+                let hashes = source_hashes(&root)?;
+                let (context_hashes, context) = provider_context(&root)?;
+                return Self::build_and_persist(root.clone(), hashes, context_hashes, context);
+            }
         };
         index.root = root;
         index.sync()?;
@@ -207,8 +214,25 @@ impl Index {
 
     pub fn sync(&mut self) -> Result<(), String> {
         let current_hashes = source_hashes(&self.root)?;
+        let (context_hashes, context) = provider_context(&self.root)?;
+        if self.context_hashes != context_hashes {
+            *self = Self::build_with_hashes(
+                self.root.clone(),
+                current_hashes,
+                context_hashes,
+                context,
+            )?;
+            self.persist()?;
+            return Ok(());
+        }
+        self.context = context;
         if !self.hashes.keys().eq(current_hashes.keys()) {
-            *self = Self::build_with_hashes(self.root.clone(), current_hashes)?;
+            *self = Self::build_with_hashes(
+                self.root.clone(),
+                current_hashes,
+                context_hashes,
+                self.context.clone(),
+            )?;
             self.persist()?;
             return Ok(());
         }
@@ -222,7 +246,13 @@ impl Index {
         }
         for path in modified {
             if self.refresh(Path::new(&path))? == RefreshKind::FullRebuild {
-                *self = Self::build_with_hashes(self.root.clone(), current_hashes)?;
+                let (context_hashes, context) = provider_context(&self.root)?;
+                *self = Self::build_with_hashes(
+                    self.root.clone(),
+                    current_hashes,
+                    context_hashes,
+                    context,
+                )?;
                 self.persist()?;
                 return Ok(());
             }
@@ -234,8 +264,10 @@ impl Index {
     fn build_and_persist(
         root: PathBuf,
         hashes: BTreeMap<String, [u8; 32]>,
+        context_hashes: BTreeMap<String, [u8; 32]>,
+        context: language::ProviderContext,
     ) -> Result<Self, String> {
-        let index = Self::build_with_hashes(root, hashes)?;
+        let index = Self::build_with_hashes(root, hashes, context_hashes, context)?;
         index.persist()?;
         Ok(index)
     }
@@ -243,6 +275,8 @@ impl Index {
     fn build_with_hashes(
         root: PathBuf,
         hashes: BTreeMap<String, [u8; 32]>,
+        context_hashes: BTreeMap<String, [u8; 32]>,
+        context: language::ProviderContext,
     ) -> Result<Self, String> {
         let mut parsed = BTreeMap::new();
         for relative in hashes.keys() {
@@ -251,11 +285,13 @@ impl Index {
                 .map_err(|error| format!("cannot read {relative}: {error}"))?;
             parsed.insert(relative.clone(), language::parse(relative, &source)?);
         }
-        let resolved = language::resolve_all(&parsed);
+        let resolved = language::resolve_all(&parsed, &context);
         let graph = materialize_graph(&parsed, &resolved);
         Ok(Self {
             root,
             hashes,
+            context_hashes,
+            context,
             parsed,
             resolved,
             graph,
@@ -295,7 +331,7 @@ impl Index {
 
         let mut affected = importers;
         affected.insert(relative);
-        let resolved = language::resolve_files(&self.parsed, &affected);
+        let resolved = language::resolve_files(&self.parsed, &affected, &self.context);
         for path in affected {
             let facts = resolved
                 .get(&path)
@@ -319,7 +355,12 @@ impl Index {
         loop {
             let before = affected.len();
             for (path, facts) in &self.resolved {
-                if facts.imports.iter().any(|import| affected.contains(import)) {
+                if facts
+                    .imports
+                    .iter()
+                    .chain(&facts.dependencies)
+                    .any(|import| affected.contains(import))
+                {
                     affected.insert(path.clone());
                 }
             }
@@ -337,6 +378,7 @@ impl Index {
     fn persist(&self) -> Result<(), String> {
         let cached = CachedIndex {
             hashes: self.hashes.clone(),
+            context_hashes: self.context_hashes.clone(),
             parsed: self.parsed.clone(),
             resolved: self.resolved.clone(),
         };
@@ -367,10 +409,13 @@ impl Index {
         if !cached.valid() {
             return None;
         }
+        let (_context_hashes, context) = provider_context(root).ok()?;
         let graph = materialize_graph(&cached.parsed, &cached.resolved);
         Some(Self {
             root: root.to_path_buf(),
             hashes: cached.hashes,
+            context_hashes: cached.context_hashes,
+            context,
             parsed: cached.parsed,
             resolved: cached.resolved,
             graph,
@@ -392,6 +437,7 @@ struct CacheEnvelope {
 #[derive(Deserialize, Serialize)]
 struct CachedIndex {
     hashes: BTreeMap<String, [u8; 32]>,
+    context_hashes: BTreeMap<String, [u8; 32]>,
     parsed: BTreeMap<String, ParsedFile>,
     resolved: BTreeMap<String, ResolvedFile>,
 }
@@ -420,6 +466,33 @@ fn source_hashes(root: &Path) -> Result<BTreeMap<String, [u8; 32]>, String> {
         hashes.insert(relative, *blake3::hash(&bytes).as_bytes());
     }
     Ok(hashes)
+}
+
+fn provider_context(
+    root: &Path,
+) -> Result<(BTreeMap<String, [u8; 32]>, language::ProviderContext), String> {
+    let mut hashes = BTreeMap::new();
+    let mut files = BTreeMap::new();
+    let mut walker = WalkBuilder::new(root);
+    walker
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true);
+    for entry in walker.build() {
+        let entry = entry.map_err(|error| format!("cannot walk {}: {error}", root.display()))?;
+        let path = entry.path();
+        if !path.is_file() || !language::is_context_path(path) {
+            continue;
+        }
+        let relative = relative_path(root, path)?;
+        let bytes = fs::read(path).map_err(|error| format!("cannot read {relative}: {error}"))?;
+        let text = String::from_utf8(bytes.clone())
+            .map_err(|error| format!("cannot read {relative} as UTF-8: {error}"))?;
+        hashes.insert(relative.clone(), *blake3::hash(&bytes).as_bytes());
+        files.insert(relative, text);
+    }
+    Ok((hashes, language::ProviderContext { files }))
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1821,7 +1894,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_js_ts_python_and_rust_files_share_one_graph_and_refresh_independently() {
+    fn mixed_js_ts_python_rust_and_go_files_share_one_graph_and_refresh_independently() {
         let repo = Repo::new(&[
             (
                 "frontend.ts",
@@ -1835,10 +1908,14 @@ mod tests {
                 "engine.rs",
                 "fn engine_leaf() {}\nfn engine_entry() { engine_leaf(); }\n",
             ),
+            (
+                "worker.go",
+                "package worker\nfunc goLeaf() {}\nfunc goEntry() { goLeaf() }\n",
+            ),
         ]);
         let mut index = Index::build(&repo.0).unwrap();
-        assert_eq!(index.graph().files.len(), 3);
-        for target in ["uiEntry", "api_entry", "engine_entry"] {
+        assert_eq!(index.graph().files.len(), 4);
+        for target in ["uiEntry", "api_entry", "engine_entry", "goEntry"] {
             assert!(!query::find(index.graph(), target).starts_with("No symbols found"));
         }
         repo.write(
@@ -1870,6 +1947,49 @@ mod tests {
             query::inspect(index.graph(), "engine.rs::engine_entry")
                 .unwrap()
                 .contains("engine.rs::engine_leaf")
+        );
+        repo.write(
+            "worker.go",
+            "package worker\nfunc goLeaf() {}\nfunc goEntry() { goLeaf(); goLeaf() }\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("worker.go")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert_eq!(
+            index
+                .graph()
+                .call_sites(
+                    index.graph().symbol_candidates("worker.go::goEntry")[0],
+                    index.graph().symbol_candidates("worker.go::goLeaf")[0]
+                )
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn go_module_context_rebuilds_and_re_resolves_importers() {
+        let repo = Repo::new(&[
+            ("go.mod", "module example.com/one\n"),
+            (
+                "main.go",
+                "package main\nimport \"example.com/one/util\"\nfunc entry() { util.Helper() }\n",
+            ),
+            ("util/util.go", "package util\nfunc Helper() {}\n"),
+        ]);
+        let mut index = Index::open(&repo.0).unwrap();
+        assert!(query::trace(index.graph(), "main.go::entry", "util/util.go::Helper").is_ok());
+        repo.write("go.mod", "module example.com/two\n");
+        index.sync().unwrap();
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            query::trace(index.graph(), "main.go::entry", "util/util.go::Helper")
+                .unwrap()
+                .starts_with("No known CALLS path")
         );
     }
 

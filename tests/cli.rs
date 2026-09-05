@@ -73,7 +73,7 @@ fn unsupported_repositories_explain_the_language_boundary() {
     assert!(empty.status.success());
     assert_eq!(
         String::from_utf8(empty.stdout).unwrap(),
-        "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, .jsx, .py, and .rs.\n"
+        "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, .jsx, .py, .rs, and .go.\n"
     );
 
     fs::write(repository.join("main.dart"), "void main() {}\n").unwrap();

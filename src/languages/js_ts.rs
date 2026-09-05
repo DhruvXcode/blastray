@@ -5,7 +5,9 @@ use std::path::{Component, Path, PathBuf};
 use tree_sitter::{Language, Node, Parser};
 
 use crate::index::{RelationshipIssue, RelationshipStatus, SymbolKind};
-use crate::language::{ParsedFile as ProviderParsedFile, ResolvedCall, ResolvedFile};
+use crate::language::{
+    ParsedFile as ProviderParsedFile, ProviderContext, ResolvedCall, ResolvedFile,
+};
 
 pub(crate) const EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx"];
 
@@ -639,12 +641,15 @@ fn text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
 pub(crate) fn resolve(
     parsed: &BTreeMap<String, ProviderParsedFile>,
     paths: &BTreeSet<String>,
+    _: &ProviderContext,
 ) -> BTreeMap<String, ResolvedFile> {
     let parsed: BTreeMap<String, &ParsedFile> = parsed
         .iter()
         .filter_map(|(path, file)| match file {
             ProviderParsedFile::JsTs(file) => Some((path.clone(), file)),
-            ProviderParsedFile::Python(_) | ProviderParsedFile::Rust(_) => None,
+            ProviderParsedFile::Python(_)
+            | ProviderParsedFile::Rust(_)
+            | ProviderParsedFile::Go(_) => None,
         })
         .collect();
     let context = ResolveContext::new(&parsed);

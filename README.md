@@ -14,8 +14,8 @@ It provides four primitives:
 
 ## Status
 
-Mission 15 provides conservative JavaScript/TypeScript, Python, and Rust slices
-for `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, and `.rs` files, with a persistent local index
+Mission 16 provides conservative JavaScript/TypeScript, Python, Rust, and Go slices
+for `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, and `.go` files, with a persistent local index
 and `impact --diff` for staged plus unstaged Git changes. It indexes named
 top-level functions, callable top-level `const` bindings, classes, and direct
 class methods; resolves only confirmed local or relative-imported function

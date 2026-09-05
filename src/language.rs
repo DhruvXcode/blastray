@@ -4,6 +4,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::index::{RelationshipIssue, SymbolKind};
+use crate::languages::go;
 use crate::languages::js_ts;
 use crate::languages::python;
 use crate::languages::rust;
@@ -13,38 +14,62 @@ pub(crate) enum ParsedFile {
     JsTs(js_ts::ParsedFile),
     Python(python::ParsedFile),
     Rust(rust::ParsedFile),
+    Go(go::ParsedFile),
 }
 
 struct Provider {
     supports_path: fn(&Path) -> bool,
     parse: fn(&str, &str) -> Result<ParsedFile, String>,
     resolve: ResolveProvider,
+    is_context_path: fn(&Path) -> bool,
     extensions: &'static [&'static str],
 }
 
-type ResolveProvider =
-    fn(&BTreeMap<String, ParsedFile>, &BTreeSet<String>) -> BTreeMap<String, ResolvedFile>;
+type ResolveProvider = fn(
+    &BTreeMap<String, ParsedFile>,
+    &BTreeSet<String>,
+    &ProviderContext,
+) -> BTreeMap<String, ResolvedFile>;
 
-const PROVIDERS: [Provider; 3] = [
+#[derive(Clone, Default)]
+pub(crate) struct ProviderContext {
+    pub files: BTreeMap<String, String>,
+}
+
+const PROVIDERS: [Provider; 4] = [
     Provider {
         supports_path: js_ts::supports_path,
         parse: js_ts::parse,
         resolve: js_ts::resolve,
+        is_context_path: no_context_path,
         extensions: js_ts::EXTENSIONS,
     },
     Provider {
         supports_path: python::supports_path,
         parse: python::parse,
         resolve: python::resolve,
+        is_context_path: no_context_path,
         extensions: python::EXTENSIONS,
     },
     Provider {
         supports_path: rust::supports_path,
         parse: rust::parse,
         resolve: rust::resolve,
+        is_context_path: no_context_path,
         extensions: rust::EXTENSIONS,
     },
+    Provider {
+        supports_path: go::supports_path,
+        parse: go::parse,
+        resolve: go::resolve,
+        is_context_path: go::is_context_path,
+        extensions: go::EXTENSIONS,
+    },
 ];
+
+fn no_context_path(_: &Path) -> bool {
+    false
+}
 
 #[derive(Clone)]
 pub(crate) struct SymbolFact {
@@ -60,6 +85,7 @@ pub(crate) struct SymbolFact {
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub(crate) struct ResolvedFile {
     pub imports: Vec<String>,
+    pub dependencies: Vec<String>,
     pub calls: Vec<ResolvedCall>,
     pub issues: Vec<RelationshipIssue>,
 }
@@ -78,6 +104,7 @@ impl ParsedFile {
             Self::JsTs(file) => &file.path,
             Self::Python(file) => &file.path,
             Self::Rust(file) => &file.path,
+            Self::Go(file) => &file.path,
         }
     }
 
@@ -86,6 +113,7 @@ impl ParsedFile {
             Self::JsTs(file) => file.symbols.iter().map(SymbolFact::from).collect(),
             Self::Python(file) => file.symbols.iter().map(SymbolFact::from).collect(),
             Self::Rust(file) => file.symbols.iter().map(SymbolFact::from).collect(),
+            Self::Go(file) => file.symbols.iter().map(SymbolFact::from).collect(),
         }
     }
 }
@@ -132,6 +160,20 @@ impl From<&rust::SymbolDraft> for SymbolFact {
     }
 }
 
+impl From<&go::SymbolDraft> for SymbolFact {
+    fn from(symbol: &go::SymbolDraft) -> Self {
+        Self {
+            canonical: symbol.canonical.clone(),
+            name: symbol.name.clone(),
+            file: symbol.file.clone(),
+            line: symbol.line,
+            end_line: symbol.end_line,
+            column: symbol.column,
+            kind: symbol.kind,
+        }
+    }
+}
+
 fn provider_for_path(path: &Path) -> Option<&'static Provider> {
     PROVIDERS
         .iter()
@@ -142,23 +184,33 @@ pub(crate) fn is_supported_path(path: &Path) -> bool {
     provider_for_path(path).is_some()
 }
 
+pub(crate) fn is_context_path(path: &Path) -> bool {
+    PROVIDERS
+        .iter()
+        .any(|provider| (provider.is_context_path)(path))
+}
+
 pub(crate) fn parse(path: &str, source: &str) -> Result<ParsedFile, String> {
     provider_for_path(Path::new(path))
         .map(|provider| (provider.parse)(path, source))
         .unwrap_or_else(|| Err(format!("unsupported source file {path}")))
 }
 
-pub(crate) fn resolve_all(parsed: &BTreeMap<String, ParsedFile>) -> BTreeMap<String, ResolvedFile> {
-    resolve_files(parsed, &parsed.keys().cloned().collect())
+pub(crate) fn resolve_all(
+    parsed: &BTreeMap<String, ParsedFile>,
+    context: &ProviderContext,
+) -> BTreeMap<String, ResolvedFile> {
+    resolve_files(parsed, &parsed.keys().cloned().collect(), context)
 }
 
 pub(crate) fn resolve_files(
     parsed: &BTreeMap<String, ParsedFile>,
     paths: &BTreeSet<String>,
+    context: &ProviderContext,
 ) -> BTreeMap<String, ResolvedFile> {
     let mut resolved = BTreeMap::new();
     for provider in &PROVIDERS {
-        resolved.extend((provider.resolve)(parsed, paths));
+        resolved.extend((provider.resolve)(parsed, paths, context));
     }
     resolved
 }
@@ -208,10 +260,11 @@ mod tests {
         }
         assert!(provider_for_path(Path::new("a.py")).is_some());
         assert!(provider_for_path(Path::new("a.rs")).is_some());
+        assert!(provider_for_path(Path::new("a.go")).is_some());
         assert!(!is_supported_path(Path::new("a.dart")));
         assert_eq!(
             no_supported_source_files_message(),
-            "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, .jsx, .py, and .rs."
+            "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, .jsx, .py, .rs, and .go."
         );
     }
 }

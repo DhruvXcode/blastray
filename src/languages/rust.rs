@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use tree_sitter::{Node, Parser};
 
 use crate::index::{RelationshipIssue, RelationshipStatus, SymbolKind};
-use crate::language::{ParsedFile as ProviderParsedFile, ResolvedCall, ResolvedFile};
+use crate::language::{
+    ParsedFile as ProviderParsedFile, ProviderContext, ResolvedCall, ResolvedFile,
+};
 
 pub(crate) const EXTENSIONS: &[&str] = &["rs"];
 
@@ -394,12 +396,15 @@ fn split_alias(value: &str) -> (String, String) {
 pub(crate) fn resolve(
     parsed: &BTreeMap<String, ProviderParsedFile>,
     paths: &BTreeSet<String>,
+    _: &ProviderContext,
 ) -> BTreeMap<String, ResolvedFile> {
     let parsed: BTreeMap<String, &ParsedFile> = parsed
         .iter()
         .filter_map(|(path, file)| match file {
             ProviderParsedFile::Rust(file) => Some((path.clone(), file)),
-            ProviderParsedFile::JsTs(_) | ProviderParsedFile::Python(_) => None,
+            ProviderParsedFile::JsTs(_)
+            | ProviderParsedFile::Python(_)
+            | ProviderParsedFile::Go(_) => None,
         })
         .collect();
     let context = ResolveContext::new(&parsed);
@@ -937,7 +942,11 @@ mod tests {
             .iter()
             .map(|(path, source)| (path.to_string(), parse(path, source).unwrap()))
             .collect();
-        resolve(&parsed, &parsed.keys().cloned().collect::<BTreeSet<_>>())
+        resolve(
+            &parsed,
+            &parsed.keys().cloned().collect::<BTreeSet<_>>(),
+            &crate::language::ProviderContext::default(),
+        )
     }
 
     #[test]
