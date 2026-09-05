@@ -277,6 +277,22 @@ fn maps_rust_function_and_impl_method_edits_to_narrowest_symbols() {
 }
 
 #[test]
+fn maps_java_method_body_edits_to_the_narrowest_symbol() {
+    let repo = Repo::new(&[(
+        "src/demo/Worker.java",
+        "package demo;\nclass Worker {\n  void leaf() {}\n  void entry() { this.leaf(); }\n}\n",
+    )]);
+    repo.write(
+        "src/demo/Worker.java",
+        "package demo;\nclass Worker {\n  void leaf() { int value = 1; }\n  void entry() { this.leaf(); }\n}\n",
+    );
+    let output = repo.impact();
+    assert!(output.contains("src/demo/Worker.java::Worker.leaf"));
+    assert!(output.contains("src/demo/Worker.java::Worker.entry"));
+    assert!(!output.contains("Changed symbols:\n- src/demo/Worker.java::Worker\n"));
+}
+
+#[test]
 fn maps_python_function_and_method_edits_to_common_symbol_spans() {
     let function = Repo::new(&[(
         "pkg/main.py",

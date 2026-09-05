@@ -405,6 +405,7 @@ pub(crate) fn resolve(
             ProviderParsedFile::JsTs(_)
             | ProviderParsedFile::Python(_)
             | ProviderParsedFile::Go(_) => None,
+            ProviderParsedFile::Java(_) => None,
         })
         .collect();
     let context = ResolveContext::new(&parsed);

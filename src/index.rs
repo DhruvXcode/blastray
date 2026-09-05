@@ -19,7 +19,7 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 11;
+const CACHE_SCHEMA: u32 = 12;
 
 pub fn no_supported_source_files_message() -> String {
     language::no_supported_source_files_message()
@@ -1894,7 +1894,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_js_ts_python_rust_and_go_files_share_one_graph_and_refresh_independently() {
+    fn mixed_js_ts_python_rust_go_and_java_files_share_one_graph_and_refresh_independently() {
         let repo = Repo::new(&[
             (
                 "frontend.ts",
@@ -1912,10 +1912,20 @@ mod tests {
                 "worker.go",
                 "package worker\nfunc goLeaf() {}\nfunc goEntry() { goLeaf() }\n",
             ),
+            (
+                "Worker.java",
+                "package app; class Worker { void javaLeaf() {} void javaEntry() { this.javaLeaf(); } }\n",
+            ),
         ]);
         let mut index = Index::build(&repo.0).unwrap();
-        assert_eq!(index.graph().files.len(), 4);
-        for target in ["uiEntry", "api_entry", "engine_entry", "goEntry"] {
+        assert_eq!(index.graph().files.len(), 5);
+        for target in [
+            "uiEntry",
+            "api_entry",
+            "engine_entry",
+            "goEntry",
+            "javaEntry",
+        ] {
             assert!(!query::find(index.graph(), target).starts_with("No symbols found"));
         }
         repo.write(
@@ -1964,6 +1974,30 @@ mod tests {
                 .call_sites(
                     index.graph().symbol_candidates("worker.go::goEntry")[0],
                     index.graph().symbol_candidates("worker.go::goLeaf")[0]
+                )
+                .len(),
+            2
+        );
+        repo.write(
+            "Worker.java",
+            "package app; class Worker { void javaLeaf() {} void javaEntry() { this.javaLeaf(); this.javaLeaf(); } }\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("Worker.java")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert_eq!(
+            index
+                .graph()
+                .call_sites(
+                    index
+                        .graph()
+                        .symbol_candidates("Worker.java::Worker.javaEntry")[0],
+                    index
+                        .graph()
+                        .symbol_candidates("Worker.java::Worker.javaLeaf")[0]
                 )
                 .len(),
             2

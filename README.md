@@ -26,7 +26,7 @@ blastray impact --diff
 
 ## Supported languages
 
-JavaScript, TypeScript, Python, Rust, and Go have conservative structural support. Dynamic, external-package, and compiler-dependent relationships remain unresolved rather than guessed. Go nested-module cross-package imports are not currently modeled.
+JavaScript, TypeScript, Python, Rust, Go, and Java have conservative structural support. Dynamic, external-package, and compiler-dependent relationships remain unresolved rather than guessed. Java needs no JVM, JDK, Maven, Gradle, compiler, LSP, classpath, or package-manager execution. Go nested-module cross-package imports are not currently modeled.
 
 ## Development
 

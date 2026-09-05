@@ -193,7 +193,7 @@ fn stdio_server_explains_unsupported_repositories() {
     let unsupported = text(&mcp.call("find", json!({"query": "main"}))).to_string();
     assert_eq!(
         unsupported,
-        "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, .jsx, .py, .rs, and .go."
+        "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, .jsx, .py, .rs, .go, and .java."
     );
     assert_eq!(
         text(&mcp.call("impact", json!({"target": "anything"}))),

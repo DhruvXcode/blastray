@@ -151,3 +151,25 @@ kind, used for Rust structs, enums, and traits without relabeling existing
 JavaScript/TypeScript or Python Classes. The first Rust slice proves only
 same-file free calls, uniquely declared local `mod` files, rooted local `use`
 bindings, and direct same-inherent-type `self.method()` calls.
+
+## Mission 16 boundary
+
+Go is the fourth compiled provider. Its provider-owned facts cover declared
+packages, top-level functions/types, direct receiver methods, declared imports,
+and source-only `go.mod` module context. Resolution proves same-package direct
+calls, receiver calls, and uniquely local module imports without running Go or
+reading a package cache. The generic core remains provider-neutral; schema 11
+invalidates caches before the Go parsed artifact and provider-context facts.
+
+## Mission 18 boundary
+
+Java is the fifth compiled provider. It extracts declared packages, top-level
+classes, interfaces/enums as `Type`, and direct methods with source spans.
+Only uniquely proven local-package or explicit repository-local imports become
+file dependencies. CALLS are limited to a unique direct or `this` method in the
+declaring type, or a unique indexed class's simple static method. Local and
+parameter shadowing, overloads, arbitrary receivers, inheritance/interface
+dispatch, wildcard imports, reflection, lambdas, method references, and all
+classpath/framework semantics remain unresolved. Java parsing is native only;
+no JVM/JDK, build tool, compiler, LSP, or dependency manager is invoked.
+Schema 12 invalidates pre-Java parsed artifacts.

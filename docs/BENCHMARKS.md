@@ -603,3 +603,33 @@ subset stayed exactly 2,430 files, 9,376 symbols, 5,914 IMPORTS, 10,009 CALLS,
 2,883 files, 10,281 symbols, 6,070 IMPORTS, 10,064 CALLS, 48,267 unresolved
 issues, one ambiguous issue, a 17,954,748-byte cache, and 4.520 s / 0.253 s
 cold/warm timing. These are single-machine measurements, not public claims.
+
+## Mission 18 Java-provider audit
+
+The release binary was built with `tree-sitter-java 0.23.5`; no JDK, Maven,
+Gradle, compiler, language server, or dependency installation was used.
+Disposable depth-one clones were pinned after checkout. Symbol totals are the
+native `find ''` result; timings are one cold build/query followed by one
+unchanged warm query on this environment.
+
+| repository | pinned commit | `.java` files | symbols | cold | warm |
+| --- | --- | ---: | ---: | ---: | ---: |
+| [Spring Petclinic](https://github.com/spring-projects/spring-petclinic) | `818c4136ea971c21674525f9053de0d9c7ad8cfe` | 50 | 212 | 0.043 s | 0.020 s |
+| [Guava](https://github.com/google/guava) | `5fb424c43ae38bad86b18841954337af791b6685` | 3,275 | 40,813 | 5.488 s | 0.783 s |
+| [JUnit 5](https://github.com/junit-team/junit5) | `35c56a8e02f6f2ae6c0ea3616097b1cfefe17d2a` | 1,738 | 10,912 | 1.568 s | 0.276 s |
+
+Important top-level classes, interfaces, enums, and direct methods appeared in
+all three. Twelve resolved Java call sites were source-checked across the
+repositories: same-owner direct/`this` calls in Petclinic, Guava, and JUnit,
+plus JUnit's exact repository-local static import. All 12 named the indexed
+target at the recorded call site; no false edge was found. Overloaded Guava
+methods, inherited Petclinic accessors, object receivers, and wildcard/external
+imports remained unresolved rather than being guessed.
+
+A live MCP session on Petclinic completed the unchanged four-tool workflow:
+`find`, `inspect`, `trace`, and `impact` for
+`NamedEntity.toString -> NamedEntity.getName`, including call-site evidence at
+`NamedEntity.java:47:17`. The Java method-body diff test maps a change in
+`Worker.leaf` to that method rather than its enclosing class and reaches its
+confirmed `Worker.entry` caller. These are correctness samples and
+single-machine measurements, not coverage or performance claims.

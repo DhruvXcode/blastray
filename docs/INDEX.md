@@ -133,3 +133,26 @@ map. Direct free calls and direct `self.method()` calls in one inherent impl
 produce ordinary CALLS evidence; traits, macros, associated calls, arbitrary
 receivers, and external crates do not. Cache schema 10 invalidates pre-Rust
 artifacts.
+
+## Mission 16 Go facts
+
+Go parsed artifacts retain declared package names, top-level functions/types,
+direct receiver methods, imports, callable shadow facts, and `go.mod` source
+context. The provider maps an import only when its path falls under the nearest
+known module and exactly one indexed local package directory proves the target;
+same-package direct calls and receiver calls likewise require a unique target.
+Nested-module cross-package ownership, external packages, arbitrary receivers,
+and Go overload-like uncertainty remain unresolved. Cache schema 11 invalidates
+pre-Go provider/context state.
+
+## Mission 18 Java facts
+
+Java parsed artifacts retain declared package names, non-wildcard imports,
+top-level classes plus interfaces/enums as `Type`, direct methods, modifiers
+needed for static proof, callable shadow facts, and call sites. A repository
+import is an IMPORTS edge only for one indexed type with the exact package and
+name. CALLS require one same-owner direct/`this` method, one direct static
+import, or one locally/importedly named Class and one static target method.
+Overloaded candidates, local shadowing, non-Class type receivers, arbitrary
+objects, inheritance, interfaces, and external/wildcard imports yield issues
+instead of edges. Cache schema 12 invalidates pre-Java artifacts.
