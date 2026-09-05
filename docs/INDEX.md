@@ -120,3 +120,16 @@ same-class calls through the declared first instance parameter use ordinary
 common CALLS evidence. Absolute/package and wildcard imports, arbitrary
 receivers, inheritance, and constructor ownership remain unresolved. Cache
 schema 9 invalidates pre-Python artifacts.
+
+## Mission 15 Rust facts
+
+`Type` is a common symbol kind for Rust structs, enums, and traits; existing
+Classes remain Classes. Rust parsed artifacts retain top-level functions/types,
+methods from direct impl blocks, explicit external module declarations, rooted
+use bindings, body shadow facts, and call sites. `mod name;` maps only to one
+of the structurally valid `name.rs` or `name/mod.rs` files. Rooted
+`crate`/`self`/`super` use paths resolve only through that declared local module
+map. Direct free calls and direct `self.method()` calls in one inherent impl
+produce ordinary CALLS evidence; traits, macros, associated calls, arbitrary
+receivers, and external crates do not. Cache schema 10 invalidates pre-Rust
+artifacts.

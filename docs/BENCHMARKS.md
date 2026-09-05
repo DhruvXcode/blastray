@@ -562,3 +562,44 @@ Mission 13 baseline: 2,430 files, 9,376 symbols, 5,914 IMPORTS, 10,009 CALLS,
 index is 2,674 files, 9,823 symbols, 5,933 IMPORTS, 10,028 CALLS, 47,984
 unresolved issues, and one ambiguous issue. A release cold/warm `find analyze`
 on a disposable copy measured 4.156 s / 0.305 s with a 17,684,843-byte cache.
+
+## Mission 15 Rust-provider audit
+
+The release binary grew from 11,840,888 to 12,994,648 bytes after adding only
+`tree-sitter-rust 0.24.2`. The first query/build and second unchanged query were
+run against disposable shallow clones with no dependencies installed. Counts
+are provider-neutral graph facts; `Type` is the Rust struct/enum/trait kind.
+
+| repository | pinned commit | `.rs` files | symbols (function/class/method/type) | imports | calls | unresolved | ambiguous | unresolved/symbol | cache bytes | cold | warm |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| [ripgrep](https://github.com/BurntSushi/ripgrep) | `3fce3b5bb0236da2df6d99672afb8a719642eca7` | 110 | 2,498 (327/0/1,784/387) | 103 | 435 | 7,213 | 2 | 2.89 | 2,485,403 | 0.369 s | 0.019 s |
+| [fd](https://github.com/sharkdp/fd) | `1765d0817b4e706141115b81c29a5965630e243a` | 24 | 313 (185/0/97/31) | 54 | 96 | 1,921 | 0 | 6.14 | 569,549 | 0.055 s | 0.004 s |
+| [serde](https://github.com/serde-rs/serde) | `a874a1b1bb1cc16cf5ee3b1b7b527af5705742bb` | 208 | 1,279 (658/0/208/413) | 114 | 277 | 6,063 | 0 | 4.74 | 1,813,030 | 0.242 s | 0.014 s |
+| [mini-redis](https://github.com/tokio-rs/mini-redis) | `3d93b42bc363220f85af4fc9e1bebd35b588a4a3` | 28 | 181 (40/0/109/32) | 34 | 46 | 1,070 | 0 | 5.91 | 296,358 | 0.039 s | 0.003 s |
+
+The leading unresolved categories were deliberately explicit: arbitrary,
+associated, macro, or dynamic receiver calls (5,535/1,588/3,825/763 in the
+table order); unrooted or external `use` paths (406/169/538/155); then local
+name/binding uncertainty. The first ten resolved calls from each repository
+were source checked: 40 verified, 0 incorrect, 0 uncertain. They were direct
+local/imported calls or same-inherent-type receiver calls.
+
+Live release MCP sessions completed find -> inspect -> trace -> impact against
+ripgrep (`build.rs::main -> set_git_revision_hash`), fd
+(`Opts.search_paths -> Opts.normalize_path`), and serde
+(`serde/build.rs::main -> rustc_minor_version`). The unmodeled receiver and
+external-crate portions remained visible in `inspect` instead of becoming
+edges. Common `impact --diff` tests map Rust free-function and impl-method body
+edits to their narrowest symbols and traverse confirmed callers.
+
+BlastRay self-dogfood indexed 28 source files, 331 symbols, 259 CALLS, and a
+725,251-byte cache in 0.405 s cold / 0.007 s warm. `find resolve`, `inspect
+src/languages/rust.rs::resolve_file`, `trace resolve -> resolve_file`, and
+`impact resolve_file` all exposed the provider's direct implementation path;
+associated standard-library calls and arbitrary receivers remained the main
+source-reading fallback. On the pinned GitNexus nested source set, the JS/TS
+subset stayed exactly 2,430 files, 9,376 symbols, 5,914 IMPORTS, 10,009 CALLS,
+47,427 unresolved issues, and one ambiguous issue. A fresh combined index had
+2,883 files, 10,281 symbols, 6,070 IMPORTS, 10,064 CALLS, 48,267 unresolved
+issues, one ambiguous issue, a 17,954,748-byte cache, and 4.520 s / 0.253 s
+cold/warm timing. These are single-machine measurements, not public claims.

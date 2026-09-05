@@ -6,11 +6,13 @@ use serde::{Deserialize, Serialize};
 use crate::index::{RelationshipIssue, SymbolKind};
 use crate::languages::js_ts;
 use crate::languages::python;
+use crate::languages::rust;
 
 #[derive(Clone, Deserialize, Serialize)]
 pub(crate) enum ParsedFile {
     JsTs(js_ts::ParsedFile),
     Python(python::ParsedFile),
+    Rust(rust::ParsedFile),
 }
 
 struct Provider {
@@ -23,7 +25,7 @@ struct Provider {
 type ResolveProvider =
     fn(&BTreeMap<String, ParsedFile>, &BTreeSet<String>) -> BTreeMap<String, ResolvedFile>;
 
-const PROVIDERS: [Provider; 2] = [
+const PROVIDERS: [Provider; 3] = [
     Provider {
         supports_path: js_ts::supports_path,
         parse: js_ts::parse,
@@ -35,6 +37,12 @@ const PROVIDERS: [Provider; 2] = [
         parse: python::parse,
         resolve: python::resolve,
         extensions: python::EXTENSIONS,
+    },
+    Provider {
+        supports_path: rust::supports_path,
+        parse: rust::parse,
+        resolve: rust::resolve,
+        extensions: rust::EXTENSIONS,
     },
 ];
 
@@ -69,6 +77,7 @@ impl ParsedFile {
         match self {
             Self::JsTs(file) => &file.path,
             Self::Python(file) => &file.path,
+            Self::Rust(file) => &file.path,
         }
     }
 
@@ -76,6 +85,7 @@ impl ParsedFile {
         match self {
             Self::JsTs(file) => file.symbols.iter().map(SymbolFact::from).collect(),
             Self::Python(file) => file.symbols.iter().map(SymbolFact::from).collect(),
+            Self::Rust(file) => file.symbols.iter().map(SymbolFact::from).collect(),
         }
     }
 }
@@ -96,6 +106,20 @@ impl From<&js_ts::SymbolDraft> for SymbolFact {
 
 impl From<&python::SymbolDraft> for SymbolFact {
     fn from(symbol: &python::SymbolDraft) -> Self {
+        Self {
+            canonical: symbol.canonical.clone(),
+            name: symbol.name.clone(),
+            file: symbol.file.clone(),
+            line: symbol.line,
+            end_line: symbol.end_line,
+            column: symbol.column,
+            kind: symbol.kind,
+        }
+    }
+}
+
+impl From<&rust::SymbolDraft> for SymbolFact {
+    fn from(symbol: &rust::SymbolDraft) -> Self {
         Self {
             canonical: symbol.canonical.clone(),
             name: symbol.name.clone(),
@@ -183,10 +207,11 @@ mod tests {
             assert!(provider_for_path(Path::new(path)).is_some());
         }
         assert!(provider_for_path(Path::new("a.py")).is_some());
+        assert!(provider_for_path(Path::new("a.rs")).is_some());
         assert!(!is_supported_path(Path::new("a.dart")));
         assert_eq!(
             no_supported_source_files_message(),
-            "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, .jsx, and .py."
+            "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, .jsx, .py, and .rs."
         );
     }
 }

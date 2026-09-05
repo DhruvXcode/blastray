@@ -19,7 +19,7 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 9;
+const CACHE_SCHEMA: u32 = 10;
 
 pub fn no_supported_source_files_message() -> String {
     language::no_supported_source_files_message()
@@ -30,6 +30,7 @@ pub enum SymbolKind {
     Function,
     Class,
     Method,
+    Type,
 }
 
 impl SymbolKind {
@@ -38,6 +39,7 @@ impl SymbolKind {
             Self::Function => "function",
             Self::Class => "class",
             Self::Method => "method",
+            Self::Type => "type",
         }
     }
 }
@@ -1770,6 +1772,104 @@ mod tests {
             query::inspect(index.graph(), "backend.py::api_entry")
                 .unwrap()
                 .contains("backend.py::api_leaf")
+        );
+    }
+
+    #[test]
+    fn rust_refresh_modules_and_persistence_match_a_full_build() {
+        let repo = Repo::new(&[
+            (
+                "src/lib.rs",
+                "mod util;\nuse crate::util::leaf;\nfn entry() { leaf(); }\nstruct Worker;\nimpl Worker { fn leaf(&self) {} fn entry(&self) { self.leaf(); } }\n",
+            ),
+            ("src/util.rs", "pub fn leaf() {}\n"),
+        ]);
+        let mut index = Index::build(&repo.0).unwrap();
+        assert!(
+            query::trace(index.graph(), "src/lib.rs::entry", "src/util.rs::leaf")
+                .unwrap()
+                .contains("Known CALLS path")
+        );
+        repo.write(
+            "src/lib.rs",
+            "mod util;\nuse crate::util::leaf;\nfn entry() { leaf(); leaf(); }\nstruct Worker;\nimpl Worker { fn leaf(&self) {} fn next(&self) {} fn entry(&self) { self.leaf(); self.next(); } }\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("src/lib.rs")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        let entry = index.graph().symbol_candidates("src/lib.rs::entry")[0];
+        let leaf = index.graph().symbol_candidates("src/util.rs::leaf")[0];
+        assert_eq!(index.graph().call_sites(entry, leaf).len(), 2);
+
+        repo.write("src/util.rs", "pub fn renamed() {}\n");
+        assert_eq!(
+            index.refresh(Path::new("src/util.rs")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            query::inspect(index.graph(), "src/lib.rs::entry")
+                .unwrap()
+                .contains("imported Rust binding is not uniquely resolved")
+        );
+        let persistent = Index::open(&repo.0).unwrap();
+        assert_equivalent(&persistent, &full);
+    }
+
+    #[test]
+    fn mixed_js_ts_python_and_rust_files_share_one_graph_and_refresh_independently() {
+        let repo = Repo::new(&[
+            (
+                "frontend.ts",
+                "export function uiLeaf() {}\nexport function uiEntry() { uiLeaf(); }\n",
+            ),
+            (
+                "backend.py",
+                "def api_leaf():\n    pass\n\ndef api_entry():\n    api_leaf()\n",
+            ),
+            (
+                "engine.rs",
+                "fn engine_leaf() {}\nfn engine_entry() { engine_leaf(); }\n",
+            ),
+        ]);
+        let mut index = Index::build(&repo.0).unwrap();
+        assert_eq!(index.graph().files.len(), 3);
+        for target in ["uiEntry", "api_entry", "engine_entry"] {
+            assert!(!query::find(index.graph(), target).starts_with("No symbols found"));
+        }
+        repo.write(
+            "engine.rs",
+            "fn engine_leaf() {}\nfn engine_entry() { engine_leaf(); engine_leaf(); }\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("engine.rs")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            query::inspect(index.graph(), "frontend.ts::uiEntry")
+                .unwrap()
+                .contains("frontend.ts::uiLeaf")
+        );
+        repo.write(
+            "backend.py",
+            "def api_leaf():\n    pass\n\ndef api_entry():\n    api_leaf()\n    api_leaf()\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("backend.py")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let full = Index::build(&repo.0).unwrap();
+        assert_equivalent(&index, &full);
+        assert!(
+            query::inspect(index.graph(), "engine.rs::engine_entry")
+                .unwrap()
+                .contains("engine.rs::engine_leaf")
         );
     }
 

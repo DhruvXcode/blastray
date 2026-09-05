@@ -193,7 +193,7 @@ fn stdio_server_explains_unsupported_repositories() {
     let unsupported = text(&mcp.call("find", json!({"query": "main"}))).to_string();
     assert_eq!(
         unsupported,
-        "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, .jsx, and .py."
+        "No supported source files found.\nBlastRay currently indexes .ts, .tsx, .js, .jsx, .py, and .rs."
     );
     assert_eq!(
         text(&mcp.call("impact", json!({"target": "anything"}))),
@@ -248,6 +248,11 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
         "pkg/main.py",
         "from .util import python_leaf\n\ndef python_entry():\n    python_leaf()\n",
     );
+    repo.write(
+        "rust/src/lib.rs",
+        "mod util;\nuse crate::util::rust_leaf;\nfn rust_entry() { rust_leaf(); }\nstruct Worker;\nimpl Worker { fn leaf(&self) {} fn entry(&self) { self.leaf(); } }\n",
+    );
+    repo.write("rust/src/util.rs", "pub fn rust_leaf() {}\n");
     let mut mcp = Mcp::start(&repo);
 
     let list = mcp.request("tools/list", json!({}));
@@ -271,6 +276,13 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
         text(&mcp.call(
             "trace",
             json!({"from": "src/b.ts::entry", "to": "src/a.ts::leaf"})
+        ))
+        .contains("Known CALLS path")
+    );
+    assert!(
+        text(&mcp.call(
+            "trace",
+            json!({"from": "rust/src/lib.rs::rust_entry", "to": "rust/src/util.rs::rust_leaf"})
         ))
         .contains("Known CALLS path")
     );
@@ -390,6 +402,12 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
     assert!(
         text(&mcp.call("inspect", json!({"target": "pkg/main.py::python_entry"})))
             .contains("imported Python binding is not uniquely resolved")
+    );
+
+    repo.write("rust/src/util.rs", "pub fn rust_next() {}\n");
+    assert!(
+        text(&mcp.call("inspect", json!({"target": "rust/src/lib.rs::rust_entry"})))
+            .contains("imported Rust binding is not uniquely resolved")
     );
 
     repo.write(

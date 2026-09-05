@@ -260,6 +260,23 @@ fn direct_line_mapping_is_stable_for_repeated_runs() {
 }
 
 #[test]
+fn maps_rust_function_and_impl_method_edits_to_narrowest_symbols() {
+    let repo = Repo::new(&[(
+        "src/lib.rs",
+        "fn leaf() {}\nfn entry() { leaf(); }\nstruct Worker;\nimpl Worker {\n    fn leaf(&self) {}\n    fn entry(&self) { self.leaf(); }\n}\n",
+    )]);
+    repo.write(
+        "src/lib.rs",
+        "fn leaf() { let _ = 1; }\nfn entry() { leaf(); }\nstruct Worker;\nimpl Worker {\n    fn leaf(&self) { let _ = 2; }\n    fn entry(&self) { self.leaf(); }\n}\n",
+    );
+    let output = repo.impact();
+    assert!(output.contains("src/lib.rs::leaf"));
+    assert!(output.contains("src/lib.rs::Worker.leaf"));
+    assert!(output.contains("src/lib.rs::entry"));
+    assert!(output.contains("src/lib.rs::Worker.entry"));
+}
+
+#[test]
 fn maps_python_function_and_method_edits_to_common_symbol_spans() {
     let function = Repo::new(&[(
         "pkg/main.py",

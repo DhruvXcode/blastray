@@ -644,7 +644,7 @@ pub(crate) fn resolve(
         .iter()
         .filter_map(|(path, file)| match file {
             ProviderParsedFile::JsTs(file) => Some((path.clone(), file)),
-            ProviderParsedFile::Python(_) => None,
+            ProviderParsedFile::Python(_) | ProviderParsedFile::Rust(_) => None,
         })
         .collect();
     let context = ResolveContext::new(&parsed);

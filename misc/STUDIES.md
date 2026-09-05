@@ -115,6 +115,6 @@
   type, object-member, or external-package semantics.
   Reference: Mission 11 census; `src/cli/analyze-watch.ts`,
   `src/cli/watch-queue.ts` in GitNexus `932d937`.
-## Mission 14 provider lesson
-- Finding: explicit relative Python imports were common in package-oriented repositories, while absolute imports require environment/package knowledge.
-  Why it matters: a filesystem-only provider can safely recover the former and must leave the latter explicit. Reference: Mission 14 OSS census.
+## Provider lessons
+- Python: explicit relative imports were common in package-oriented repositories, while absolute imports need environment/package knowledge; a filesystem-only provider must leave the latter explicit. Reference: Mission 14 OSS census.
+- Rust: declared file modules and rooted use paths provide a small proof surface, while rustc method selection, macros, traits, and external crates do not. Reference: Mission 15 OSS audit.

@@ -440,7 +440,7 @@ pub(crate) fn resolve(
         .iter()
         .filter_map(|(path, file)| match file {
             ProviderParsedFile::Python(file) => Some((path.clone(), file)),
-            ProviderParsedFile::JsTs(_) => None,
+            ProviderParsedFile::JsTs(_) | ProviderParsedFile::Rust(_) => None,
         })
         .collect();
     let context = ResolveContext::new(&parsed);
@@ -481,7 +481,7 @@ impl ResolveContext {
                                 .push(symbol.canonical.clone());
                         }
                     }
-                    SymbolKind::Class => {}
+                    SymbolKind::Class | SymbolKind::Type => {}
                 }
             }
         }

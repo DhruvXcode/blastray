@@ -141,3 +141,13 @@ Python is the second compiled provider and emits the same common facts. It owns
 indexing, graph/query/diff/MCP code remains language-independent. The first
 slice proves only top-level functions, classes/direct methods, explicit
 relative function imports, and direct same-class instance receiver calls.
+
+## Mission 15 boundary
+
+Rust is a third compiled provider. It owns `.rs` grammar selection, Rust item
+and module extraction, and conservative resolution; core indexing, graph/query,
+diff, CLI, and MCP remain provider-neutral. `Type` is the one new common symbol
+kind, used for Rust structs, enums, and traits without relabeling existing
+JavaScript/TypeScript or Python Classes. The first Rust slice proves only
+same-file free calls, uniquely declared local `mod` files, rooted local `use`
+bindings, and direct same-inherent-type `self.method()` calls.
