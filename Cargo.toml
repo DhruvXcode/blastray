@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "A tiny native code-intelligence engine for coding agents."
+repository = "https://github.com/DhruvXcode/blastray"
+homepage = "https://github.com/DhruvXcode/blastray"
+readme = "README.md"
+keywords = ["code-intelligence", "mcp", "developer-tools", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 blake3 = "1.8.3"

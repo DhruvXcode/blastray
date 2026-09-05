@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, extension: tar.gz }
+          - { os: macos-latest, target: aarch64-apple-darwin, extension: tar.gz }
+          - { os: macos-13, target: x86_64-apple-darwin, extension: tar.gz }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, extension: zip }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: ${{ matrix.target }} }
+      - run: cargo build --release --target ${{ matrix.target }}
+      - if: matrix.extension == 'tar.gz'
+        run: tar -C target/${{ matrix.target }}/release -czf blastray-${{ matrix.target }}.tar.gz blastray
+      - if: matrix.extension == 'zip'
+        shell: pwsh
+        run: Compress-Archive -Path target/${{ matrix.target }}/release/blastray.exe -DestinationPath blastray-${{ matrix.target }}.zip
+      - uses: softprops/action-gh-release@v2
+        with: { files: blastray-${{ matrix.target }}.${{ matrix.extension }} }
