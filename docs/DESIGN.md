@@ -177,3 +177,14 @@ use a normalized syntactic parameter signature in their canonical selector;
 non-overloaded methods keep the concise selector. Java parsing is native only;
 no JVM/JDK, build tool, compiler, LSP, or dependency manager is invoked.
 Schema 13 invalidates pre-hardened Java parsed artifacts.
+
+## Mission 19 boundary
+
+`find` has a separate, provider-neutral discovery layer. It ranks compact
+source-derived identifier, path, declaration, comment/docstring, string,
+body, and test-context terms deterministically; exact identity and exact name
+remain dominant. A bounded confirmed-CALLS neighborhood boost can reorder
+already textual candidates, but never adds a candidate or graph edge. Search
+relevance is therefore not graph truth: IMPORTS and CALLS remain only the
+conservative facts proven by providers. There are no embeddings, model calls,
+vector storage, daemon, or second indexing lifecycle.

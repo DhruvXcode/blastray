@@ -19,7 +19,7 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 13;
+const CACHE_SCHEMA: u32 = 14;
 
 pub fn no_supported_source_files_message() -> String {
     language::no_supported_source_files_message()
@@ -58,6 +58,21 @@ pub struct Symbol {
     pub end_line: usize,
     pub column: usize,
     pub kind: SymbolKind,
+}
+
+/// Compact, source-derived discovery evidence. This is deliberately separate
+/// from graph facts: terms can make a symbol easier to find, but never create
+/// a relationship.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub(crate) struct SearchFact {
+    pub canonical: String,
+    pub identifier: Vec<String>,
+    pub path: Vec<String>,
+    pub declaration: Vec<String>,
+    pub comments: Vec<String>,
+    pub strings: Vec<String>,
+    pub body: Vec<String>,
+    pub test: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +138,7 @@ pub struct Graph {
     call_sites: BTreeMap<(usize, usize), Vec<CallSite>>,
     canonical_symbols: BTreeMap<String, Vec<usize>>,
     named_symbols: BTreeMap<String, Vec<usize>>,
+    pub(crate) search: Vec<SearchFact>,
 }
 
 impl Graph {
@@ -180,6 +196,7 @@ pub struct Index {
     context_hashes: BTreeMap<String, [u8; 32]>,
     context: language::ProviderContext,
     parsed: BTreeMap<String, ParsedFile>,
+    search: BTreeMap<String, Vec<SearchFact>>,
     resolved: BTreeMap<String, ResolvedFile>,
     graph: Graph,
 }
@@ -279,20 +296,27 @@ impl Index {
         context: language::ProviderContext,
     ) -> Result<Self, String> {
         let mut parsed = BTreeMap::new();
+        let mut search = BTreeMap::new();
         for relative in hashes.keys() {
             let path = root.join(relative);
             let source = std::fs::read_to_string(&path)
                 .map_err(|error| format!("cannot read {relative}: {error}"))?;
-            parsed.insert(relative.clone(), language::parse(relative, &source)?);
+            let file = language::parse(relative, &source)?;
+            search.insert(
+                relative.clone(),
+                search_facts(relative, &source, &file.symbols()),
+            );
+            parsed.insert(relative.clone(), file);
         }
         let resolved = language::resolve_all(&parsed, &context);
-        let graph = materialize_graph(&parsed, &resolved);
+        let graph = materialize_graph(&parsed, &resolved, &search);
         Ok(Self {
             root,
             hashes,
             context_hashes,
             context,
             parsed,
+            search,
             resolved,
             graph,
         })
@@ -322,8 +346,12 @@ impl Index {
         let importers = self.importer_closure(&relative);
         let source = std::fs::read_to_string(&source_path)
             .map_err(|error| format!("cannot read {relative}: {error}"))?;
-        self.parsed
-            .insert(relative.clone(), language::parse(&relative, &source)?);
+        let file = language::parse(&relative, &source)?;
+        self.search.insert(
+            relative.clone(),
+            search_facts(&relative, &source, &file.symbols()),
+        );
+        self.parsed.insert(relative.clone(), file);
         self.hashes.insert(
             relative.clone(),
             *blake3::hash(source.as_bytes()).as_bytes(),
@@ -339,7 +367,7 @@ impl Index {
                 .clone();
             self.resolved.insert(path, facts);
         }
-        self.graph = materialize_graph(&self.parsed, &self.resolved);
+        self.graph = materialize_graph(&self.parsed, &self.resolved, &self.search);
         Ok(RefreshKind::Incremental)
     }
 
@@ -380,6 +408,7 @@ impl Index {
             hashes: self.hashes.clone(),
             context_hashes: self.context_hashes.clone(),
             parsed: self.parsed.clone(),
+            search: self.search.clone(),
             resolved: self.resolved.clone(),
         };
         let payload = bincode::serialize(&cached)
@@ -410,13 +439,14 @@ impl Index {
             return None;
         }
         let (_context_hashes, context) = provider_context(root).ok()?;
-        let graph = materialize_graph(&cached.parsed, &cached.resolved);
+        let graph = materialize_graph(&cached.parsed, &cached.resolved, &cached.search);
         Some(Self {
             root: root.to_path_buf(),
             hashes: cached.hashes,
             context_hashes: cached.context_hashes,
             context,
             parsed: cached.parsed,
+            search: cached.search,
             resolved: cached.resolved,
             graph,
         })
@@ -439,6 +469,7 @@ struct CachedIndex {
     hashes: BTreeMap<String, [u8; 32]>,
     context_hashes: BTreeMap<String, [u8; 32]>,
     parsed: BTreeMap<String, ParsedFile>,
+    search: BTreeMap<String, Vec<SearchFact>>,
     resolved: BTreeMap<String, ResolvedFile>,
 }
 
@@ -446,14 +477,25 @@ impl CachedIndex {
     fn valid(&self) -> bool {
         if !self.hashes.keys().eq(self.parsed.keys())
             || !self.parsed.keys().eq(self.resolved.keys())
+            || !self.parsed.keys().eq(self.search.keys())
         {
             return false;
         }
         self.parsed.iter().all(|(path, file)| {
+            let symbols: BTreeSet<_> = file
+                .symbols()
+                .into_iter()
+                .map(|symbol| symbol.canonical)
+                .collect();
+            let facts: BTreeSet<_> = self.search[path]
+                .iter()
+                .map(|fact| fact.canonical.clone())
+                .collect();
             file.path() == path
-                && file.symbols().iter().all(|symbol| {
-                    symbol.file == *path && symbol.canonical.starts_with(&format!("{path}::"))
-                })
+                && symbols
+                    .iter()
+                    .all(|canonical| canonical.starts_with(&format!("{path}::")))
+                && symbols == facts
         })
     }
 }
@@ -600,6 +642,7 @@ fn relative_path(root: &Path, path: &Path) -> Result<String, String> {
 fn materialize_graph(
     parsed: &BTreeMap<String, ParsedFile>,
     resolved: &BTreeMap<String, ResolvedFile>,
+    search_files: &BTreeMap<String, Vec<SearchFact>>,
 ) -> Graph {
     let files: Vec<File> = parsed.keys().cloned().map(|path| File { path }).collect();
     let file_ids: BTreeMap<String, usize> = files
@@ -619,6 +662,20 @@ fn materialize_graph(
             end_line: draft.end_line,
             column: draft.column,
             kind: draft.kind,
+        })
+        .collect();
+    let search_by_canonical: BTreeMap<_, _> = search_files
+        .values()
+        .flatten()
+        .map(|fact| (fact.canonical.clone(), fact.clone()))
+        .collect();
+    let search = symbols
+        .iter()
+        .map(|symbol| {
+            search_by_canonical
+                .get(&symbol.canonical)
+                .cloned()
+                .unwrap_or_default()
         })
         .collect();
     let defines: Vec<DefineEdge> = symbols
@@ -707,6 +764,7 @@ fn materialize_graph(
         call_sites,
         canonical_symbols,
         named_symbols,
+        search,
     }
 }
 
@@ -719,6 +777,227 @@ where
         ids.entry(key(symbol)).or_insert_with(Vec::new).push(index);
     }
     ids
+}
+
+fn search_facts(path: &str, source: &str, symbols: &[SymbolFact]) -> Vec<SearchFact> {
+    let line_starts = line_starts(source);
+    symbols
+        .iter()
+        .map(|symbol| {
+            let start_line = symbol.line.saturating_sub(1);
+            let end_line = symbol.end_line.saturating_sub(1);
+            let context_start = start_line.saturating_sub(4);
+            let start = *line_starts.get(context_start).unwrap_or(&0);
+            let end = line_starts
+                .get(end_line.saturating_add(1))
+                .copied()
+                .unwrap_or(source.len())
+                .min(start.saturating_add(12_000));
+            let declaration_end = line_starts
+                .get(start_line.saturating_add(3))
+                .copied()
+                .unwrap_or(end)
+                .min(end);
+            let evidence = lexical_evidence(&source[start..end]);
+            let declaration = lexical_evidence(&source[start..declaration_end]);
+            let before = &source[start..line_starts.get(start_line).copied().unwrap_or(end)];
+            let is_test = path_tokens(path)
+                .iter()
+                .any(|term| matches!(term.as_str(), "test" | "tests" | "spec" | "specs"))
+                || before.contains("#[test]")
+                || before.contains("describe(")
+                || before.contains("it(")
+                || before.contains("test_");
+            SearchFact {
+                canonical: symbol.canonical.clone(),
+                identifier: search_terms(&format!("{} {}", symbol.name, symbol.canonical)),
+                path: path_tokens(path),
+                declaration: search_terms(&declaration.code),
+                comments: search_terms(&evidence.comments),
+                strings: search_terms(&evidence.strings),
+                body: search_terms(&evidence.code),
+                test: if is_test {
+                    search_terms(&format!("{} {}", symbol.name, declaration.code))
+                } else {
+                    Vec::new()
+                },
+            }
+        })
+        .collect()
+}
+
+fn line_starts(source: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    starts.extend(
+        source
+            .bytes()
+            .enumerate()
+            .filter_map(|(index, byte)| (byte == b'\n').then_some(index + 1)),
+    );
+    starts
+}
+
+struct LexicalEvidence {
+    code: String,
+    comments: String,
+    strings: String,
+}
+
+/// A deliberately tiny lexer is enough to retain useful source words without
+/// storing whole files per symbol. Providers remain responsible for syntax and
+/// structural facts; this only classifies common comment and string spellings.
+fn lexical_evidence(source: &str) -> LexicalEvidence {
+    let bytes = source.as_bytes();
+    let mut evidence = LexicalEvidence {
+        code: String::new(),
+        comments: String::new(),
+        strings: String::new(),
+    };
+    let mut index = 0;
+    while index < bytes.len() {
+        // The scanner is ASCII-delimiter based, but source comments can be
+        // UTF-8. Never form a string slice from a continuation-byte offset.
+        if !source.is_char_boundary(index) {
+            index += 1;
+            continue;
+        }
+        if bytes[index..].starts_with(b"//") {
+            let end = source[index..]
+                .find('\n')
+                .map(|offset| index + offset)
+                .unwrap_or(bytes.len());
+            evidence.comments.push_str(&source[index + 2..end]);
+            evidence.comments.push(' ');
+            index = end;
+        } else if bytes[index..].starts_with(b"/*") {
+            let end = source[index + 2..]
+                .find("*/")
+                .map(|offset| index + 2 + offset)
+                .unwrap_or(bytes.len());
+            evidence.comments.push_str(&source[index + 2..end]);
+            evidence.comments.push(' ');
+            index = end.saturating_add(2).min(bytes.len());
+        } else if bytes[index] == b'#' {
+            let end = source[index..]
+                .find('\n')
+                .map(|offset| index + offset)
+                .unwrap_or(bytes.len());
+            evidence.comments.push_str(&source[index + 1..end]);
+            evidence.comments.push(' ');
+            index = end;
+        } else if bytes[index..].starts_with(b"\"\"\"") || bytes[index..].starts_with(b"'''") {
+            let end = source[index + 3..]
+                .find(&source[index..index + 3])
+                .map(|offset| index + 3 + offset)
+                .unwrap_or(bytes.len());
+            evidence.comments.push_str(&source[index + 3..end]);
+            evidence.comments.push(' ');
+            index = end.saturating_add(3).min(bytes.len());
+        } else if matches!(bytes[index], b'\'' | b'\"' | b'`') {
+            let quote = bytes[index];
+            let mut end = index + 1;
+            while end < bytes.len() {
+                if bytes[end] == b'\\' {
+                    end = end.saturating_add(2);
+                } else if bytes[end] == quote {
+                    break;
+                } else {
+                    end += 1;
+                }
+            }
+            evidence
+                .strings
+                .push_str(&source[index + 1..end.min(bytes.len())]);
+            evidence.strings.push(' ');
+            index = end.saturating_add(1);
+        } else {
+            evidence.code.push(bytes[index] as char);
+            index += 1;
+        }
+    }
+    evidence
+}
+
+fn path_tokens(path: &str) -> Vec<String> {
+    search_terms(path)
+}
+
+fn search_terms(value: &str) -> Vec<String> {
+    let mut terms = BTreeSet::new();
+    let mut current = String::new();
+    let mut previous_lowercase = false;
+    for character in value.chars() {
+        if !character.is_alphanumeric() {
+            insert_search_term(&mut terms, &mut current);
+            previous_lowercase = false;
+            continue;
+        }
+        if character.is_uppercase() && previous_lowercase && !current.is_empty() {
+            insert_search_term(&mut terms, &mut current);
+        }
+        previous_lowercase = character.is_lowercase();
+        current.extend(character.to_lowercase());
+    }
+    insert_search_term(&mut terms, &mut current);
+    terms.into_iter().collect()
+}
+
+fn insert_search_term(terms: &mut BTreeSet<String>, current: &mut String) {
+    if current.is_empty() {
+        return;
+    }
+    let word = std::mem::take(current);
+    if word.len() < 2 || is_search_stop_word(&word) {
+        return;
+    }
+    terms.insert(stem(&word));
+}
+
+fn stem(word: &str) -> String {
+    if word.len() > 5 && word.ends_with("ies") {
+        format!("{}y", &word[..word.len() - 3])
+    } else if word.len() > 6 && word.ends_with("ation") {
+        word[..word.len() - 5].to_owned()
+    } else if word.len() > 5 && word.ends_with("ing") {
+        word[..word.len() - 3].to_owned()
+    } else if word.len() > 4 && word.ends_with("ed") {
+        word[..word.len() - 2].to_owned()
+    } else if word.len() > 3 && word.ends_with('s') {
+        word[..word.len() - 1].to_owned()
+    } else {
+        word.to_owned()
+    }
+}
+
+fn is_search_stop_word(word: &str) -> bool {
+    matches!(
+        word,
+        "a" | "an"
+            | "and"
+            | "are"
+            | "at"
+            | "be"
+            | "by"
+            | "do"
+            | "does"
+            | "for"
+            | "from"
+            | "get"
+            | "gets"
+            | "how"
+            | "in"
+            | "is"
+            | "it"
+            | "of"
+            | "on"
+            | "or"
+            | "the"
+            | "to"
+            | "what"
+            | "when"
+            | "where"
+            | "with"
+    )
 }
 
 fn normalize_relative(path: &Path) -> Option<String> {
@@ -1292,6 +1571,91 @@ mod tests {
         let capped = query::find(index.graph(), "analyze");
         assert!(capped.starts_with("Showing 20 of 25 matches; refine the query."));
         assert_eq!(capped, query::find(index.graph(), "analyze"));
+    }
+
+    #[test]
+    fn discovery_find_uses_source_evidence_across_providers() {
+        let repo = Repo::new(&[
+            (
+                "web/session.ts",
+                "/** Keep browser sessions alive after a refresh. */\nexport function renewSession() { return 'session renewed'; }\n",
+            ),
+            (
+                "net/retry.py",
+                "def retry_failed_request():\n    \"\"\"Retry failed HTTP network requests.\"\"\"\n    return 'retry request'\n",
+            ),
+            (
+                "auth/tokens.rs",
+                "// Validates incoming authentication tokens before requests run.\npub fn verify_bearer_token() {}\n",
+            ),
+            (
+                "cmd/options.go",
+                "// Register command line options for the server.\nfunc RegisterFlags() {}\n",
+            ),
+            (
+                "src/Cleanup.java",
+                "class Cleanup { // Remove test resources after every test.\n  void tearDownTest() {}\n}\n",
+            ),
+        ]);
+        let index = Index::build(&repo.0).unwrap();
+        for (task, target, reason) in [
+            (
+                "users get logged out after browser refresh",
+                "web/session.ts::renewSession",
+                "comment/doc match",
+            ),
+            (
+                "where are failed HTTP requests retried",
+                "net/retry.py::retry_failed_request",
+                "comment/doc match",
+            ),
+            (
+                "what validates incoming auth tokens",
+                "auth/tokens.rs::verify_bearer_token",
+                "comment/doc match",
+            ),
+            (
+                "where are command-line options registered",
+                "cmd/options.go::RegisterFlags",
+                "comment/doc match",
+            ),
+            (
+                "where is test cleanup performed",
+                "src/Cleanup.java::Cleanup.tearDownTest",
+                "comment/doc match",
+            ),
+        ] {
+            let found = query::find(index.graph(), task);
+            assert!(found.contains(target), "{task}: {found}");
+            assert!(found.contains(reason), "{task}: {found}");
+        }
+        assert!(query::find(index.graph(), "renewSession").contains("exact name"));
+        assert_eq!(
+            query::find(index.graph(), "where are command-line options registered"),
+            query::find(index.graph(), "where are command-line options registered")
+        );
+    }
+
+    #[test]
+    fn discovery_evidence_refreshes_and_persists_with_source_edits() {
+        let repo = Repo::new(&[("src/session.ts", "export function rotate() {}\n")]);
+        let mut index = Index::build(&repo.0).unwrap();
+        assert!(query::find(index.graph(), "browser cookie renewal").starts_with("No symbols"));
+        repo.write(
+            "src/session.ts",
+            "/** Renew the browser cookie after page refresh. */\nexport function rotate() {}\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("src/session.ts")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let refreshed = query::find(index.graph(), "browser cookie renewal");
+        assert!(refreshed.contains("src/session.ts::rotate"), "{refreshed}");
+        let persistent = Index::open(&repo.0).unwrap();
+        assert_eq!(
+            refreshed,
+            query::find(persistent.graph(), "browser cookie renewal")
+        );
     }
 
     #[test]

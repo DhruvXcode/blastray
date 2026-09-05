@@ -14,11 +14,16 @@ Run from a repository. The first query creates generated `.blastray/` state auto
 
 ```sh
 blastray find refreshSession
+blastray find "where are failed HTTP requests retried"
 blastray inspect src/auth/session.ts::refreshSession
 blastray trace src/a.ts::start src/d.ts::finish
 blastray impact src/auth/session.ts::refreshSession
 blastray impact --diff
 ```
+
+`find` accepts an exact symbol or a task/concept-style query. Exact canonical
+and symbol-name matches stay deterministic; task queries use compact local
+source evidence to suggest a small set of places to inspect.
 
 ## MCP
 

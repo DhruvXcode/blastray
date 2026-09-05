@@ -161,3 +161,12 @@ target method with that arity. An overloaded declaration uses
 type receivers, arbitrary objects, inheritance, interfaces, and
 external/wildcard imports yield issues instead of edges. Cache schema 13
 invalidates pre-hardened Java artifacts.
+
+## Mission 19 discovery facts
+
+The one `.blastray/index.bin` cache now also persists bounded per-symbol
+`SearchFact` term sets: identifier/canonical name, path, declaration,
+comments/docstrings, string literals, compact body terms, and test context.
+They are rebuilt from current source during cold build and the same existing
+file refresh path replaces them after an edit. They are lookup evidence only,
+not nodes or relationships. Schema 14 invalidates prior caches.

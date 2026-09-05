@@ -253,6 +253,10 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
         "mod util;\nuse crate::util::rust_leaf;\nfn rust_entry() { rust_leaf(); }\nstruct Worker;\nimpl Worker { fn leaf(&self) {} fn entry(&self) { self.leaf(); } }\n",
     );
     repo.write("rust/src/util.rs", "pub fn rust_leaf() {}\n");
+    repo.write(
+        "src/auth.ts",
+        "/** Validate incoming bearer tokens before a request reaches a handler. */\nexport function verifyCredentials() {}\n",
+    );
     let mut mcp = Mcp::start(&repo);
 
     let list = mcp.request("tools/list", json!({}));
@@ -269,6 +273,13 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
     assert_eq!(tools[3]["inputSchema"]["required"], json!(["from", "to"]));
 
     assert!(text(&mcp.call("find", json!({"query": "leaf"}))).contains("src/a.ts::leaf"));
+    let discovery_response = mcp.call(
+        "find",
+        json!({"query": "what validates incoming bearer tokens"}),
+    );
+    let discovery = text(&discovery_response);
+    assert!(discovery.contains("src/auth.ts::verifyCredentials"));
+    assert!(discovery.contains("comment/doc match"));
     assert!(
         text(&mcp.call("inspect", json!({"target": "src/a.ts::leaf"}))).contains("src/b.ts::entry")
     );

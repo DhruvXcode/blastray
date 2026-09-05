@@ -120,3 +120,4 @@
 - Rust: declared file modules and rooted use paths provide a small proof surface, while rustc method selection, macros, traits, and external crates do not. Reference: Mission 15 OSS audit.
 - Go: package declaration plus the nearest source `go.mod` prove a compact local-import boundary; nested modules and external packages require more environment knowledge than the provider should assume. Reference: Mission 16 OSS audit.
 - Java: package declarations and exact non-wildcard imports are enough to prove a small repository-local type map. Unique same-owner calls and simple static class calls survive source review; overloads, object receivers, and inheritance do not. Reference: Mission 18 OSS audit.
+- Discovery: source comments and docstrings can make task wording useful without asserting any new graph fact; retain them as bounded per-symbol lexical evidence rather than copying whole files or inferring edges. Reference: Mission 19 frozen discovery corpus.

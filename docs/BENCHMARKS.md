@@ -633,3 +633,63 @@ A live MCP session on Petclinic completed the unchanged four-tool workflow:
 `Worker.leaf` to that method rather than its enclosing class and reaches its
 confirmed `Worker.entry` caller. These are correctness samples and
 single-machine measurements, not coverage or performance claims.
+
+## Mission 19 frozen task-discovery corpus
+
+The corpus was selected and targets inspected before the ranking change. It is
+deliberately small (15 realistic task descriptions over three public pinned
+repositories), not a benchmark framework. A target is the inspected starting
+symbol; the session-load and ignore-cache tasks also accept their immediately
+enclosing implementation type as relevant.
+
+| repository and commit | frozen task | inspected relevant target |
+| --- | --- | --- |
+| [Flask](https://github.com/pallets/flask) `d318b683` | what happens right before the request context is popped | `Flask.do_teardown_request` |
+| Flask | how is a matched URL turned into a view response | `Flask.dispatch_request` |
+| Flask | what handles an exception that should be handled | `Flask.handle_user_exception` |
+| Flask | where are session values loaded with a maximum age | `SecureCookieSessionInterface` / `open_session` |
+| Flask | what removes an empty modified session cookie | `SecureCookieSessionInterface.save_session` |
+| [ripgrep](https://github.com/BurntSushi/ripgrep) `3fce3b5b` | where are CLI arguments converted to high level settings | `flags::parse` |
+| ripgrep | where are parsed arguments converted into a process exit code | `core::main` |
+| ripgrep | where is the root ignore matcher shared by directory walkers built | `WalkBuilder.build_ignore` |
+| ripgrep | how are ignore files loaded lazily and cached by directory | `CachedDir` / `IncrementalIgnore` |
+| ripgrep | what reads a ripgrep configuration file line by line | `flags::config::args` |
+| [Kodegraf](https://github.com/DeRaowl/Kodegraf) `f5ca3767` | what runs enabled checks on specified files | `runChecks` |
+| Kodegraf | where are walked files filtered to known supported languages | `filterByLanguage` |
+| Kodegraf | how are manual corrections for hallucinated values stored | `learnCorrection` |
+| Kodegraf | where are scan language entries checked against valid languages | `validateConfig` |
+| Kodegraf | where are check results displayed with colored pass fail warning indicators | `formatTerminal` |
+
+The pre-M19 `find` was measured from commit `be840ea`; each result was judged
+against the frozen target set above. Find 2.0 was then measured on the exact
+same checkouts and wording.
+
+| version | relevant in top 3 | top 5 | top 10 | no relevant result in shown top 20 |
+| --- | ---: | ---: | ---: | ---: |
+| before | 0 / 15 | 0 / 15 | 2 / 15 | 13 / 15 |
+| Find 2.0 | 13 / 15 | 13 / 15 | 15 / 15 | 0 / 15 |
+
+Representative useful results were Flask's `Flask.do_teardown_request` for
+“what happens right before the request context is popped”, ripgrep's
+`flags::parse` for the CLI-arguments task, and Kodegraf's `runChecks` for the
+enabled-checks task. The ripgrep dogfood pass began only with the CLI-arguments
+description: `find` put `flags::parse` second, then `inspect` immediately
+showed its `parse_low` confirmed callee and defining-file imports. No grep was
+needed to choose that starting area.
+
+One release-mode, disposable ripgrep-copy measurement (`find "ignore directory
+cache"`) recorded the honest index cost below. It includes process startup and
+whole-tree freshness hashing; it is not a public latency claim.
+
+| metric | before | Find 2.0 |
+| --- | ---: | ---: |
+| cache bytes | 2,486,291 | 4,324,019 |
+| binary bytes | 13,890,632 | 14,006,672 |
+| cold query | 0.342 s | 0.506 s |
+| unchanged warm query | 0.071 s | 0.092 s |
+
+Comment/docstring refresh is covered by the normal incremental `Index::refresh`
+test: editing a comment creates a new discovery result, and reopening the one
+persisted cache returns the same result. MCP `find` already calls that same
+`Index::sync`, so it receives the refreshed ranking without a fifth tool or
+another lifecycle.

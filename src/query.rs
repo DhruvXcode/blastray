@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::index::{Graph, RelationshipIssue, Symbol};
+use crate::index::{Graph, RelationshipIssue, SearchFact, Symbol};
 
 const MAX_TRAVERSAL: usize = 500;
 const FIND_LIMIT: usize = 20;
@@ -36,12 +36,8 @@ pub(crate) fn reverse_impact(graph: &Graph, roots: &BTreeSet<usize>) -> ReverseI
 }
 
 pub fn find(graph: &Graph, query: &str) -> String {
-    let query_tokens = tokens(query);
-    let mut matches: Vec<_> = graph
-        .symbols
-        .iter()
-        .filter_map(|symbol| find_match(graph, symbol, query, &query_tokens))
-        .collect();
+    let query_tokens = discovery_terms(query);
+    let mut matches = discovery_matches(graph, query, &query_tokens);
 
     if matches.is_empty() {
         return format!("No symbols found for '{query}'.");
@@ -73,94 +69,259 @@ pub fn find(graph: &Graph, query: &str) -> String {
 
 struct FindMatch<'a> {
     symbol: &'a Symbol,
-    score: usize,
+    score: i64,
     matched_tokens: usize,
-    reason: &'static str,
+    reason: String,
 }
 
-fn find_match<'a>(
-    graph: &Graph,
-    symbol: &'a Symbol,
+fn discovery_matches<'a>(
+    graph: &'a Graph,
     query: &str,
     query_tokens: &[String],
-) -> Option<FindMatch<'a>> {
+) -> Vec<FindMatch<'a>> {
     if query_tokens.is_empty() {
-        return Some(FindMatch {
-            symbol,
-            score: 1,
-            matched_tokens: 0,
-            reason: "all symbols",
-        });
+        return graph
+            .symbols
+            .iter()
+            .map(|symbol| FindMatch {
+                symbol,
+                score: 1,
+                matched_tokens: 0,
+                reason: "all symbols".to_owned(),
+            })
+            .collect();
     }
-    let name = symbol.name.to_lowercase();
-    let canonical = symbol.canonical.to_lowercase();
-    if canonical == query.to_lowercase() {
-        return Some(FindMatch {
-            symbol,
-            score: 10_000,
-            matched_tokens: query_tokens.len(),
-            reason: "exact identity",
+    let document_frequency: Vec<usize> = query_tokens
+        .iter()
+        .map(|term| {
+            graph
+                .search
+                .iter()
+                .filter(|fact| fact_matches(fact, term))
+                .count()
+        })
+        .collect();
+    let document_count = graph.symbols.len() as i64;
+    let query_lower = query.trim().to_lowercase();
+    let compact_identifier = !query.trim().is_empty()
+        && query.trim().chars().all(char::is_alphanumeric)
+        && query_tokens.len() > 1
+        && !graph.symbols.iter().any(|symbol| {
+            symbol.canonical.eq_ignore_ascii_case(&query_lower)
+                || symbol.name.eq_ignore_ascii_case(&query_lower)
         });
-    }
-    if symbol.name == query {
-        return Some(FindMatch {
-            symbol,
-            score: 9_000,
-            matched_tokens: query_tokens.len(),
-            reason: "exact name",
-        });
-    }
-    if name == query.to_lowercase() {
-        return Some(FindMatch {
-            symbol,
-            score: 8_500,
-            matched_tokens: query_tokens.len(),
-            reason: "exact name",
-        });
-    }
+    let mut matches: Vec<_> = graph
+        .symbols
+        .iter()
+        .enumerate()
+        .filter_map(|(id, symbol)| {
+            let exact = if symbol.canonical.to_lowercase() == query_lower {
+                Some("exact identity")
+            } else if symbol.name == query || symbol.name.to_lowercase() == query_lower {
+                Some("exact name")
+            } else {
+                None
+            };
+            let fact = graph.search.get(id)?;
+            let mut score = 0_i64;
+            let mut matched = 0;
+            let mut reasons = Vec::new();
+            for (position, term) in query_tokens.iter().enumerate() {
+                let fields = matching_fields(fact, term);
+                if fields.is_empty() {
+                    continue;
+                }
+                matched += 1;
+                let rarity =
+                    (document_count + 1) * 1_000 / (document_frequency[position] as i64 + 1);
+                let weight = fields.iter().map(|field| field.weight()).max().unwrap_or(0);
+                score += rarity * weight;
+                for field in fields {
+                    let label = field.label();
+                    if !reasons.contains(&label) {
+                        reasons.push(label);
+                    }
+                }
+            }
+            let minimum_task_terms = if query_tokens.len() >= 3 { 2 } else { 1 };
+            if (matched < minimum_task_terms
+                || (compact_identifier && matched < query_tokens.len()))
+                && exact.is_none()
+            {
+                return None;
+            }
+            // Reward a coherent task match more than a single accidental word.
+            score += (matched * matched * 2_000) as i64 / query_tokens.len() as i64;
+            if let Some(reason) = exact {
+                score += 1_000_000_000;
+                reasons.insert(0, reason);
+            }
+            Some(FindMatch {
+                symbol,
+                score,
+                matched_tokens: matched,
+                reason: reasons.join(" + "),
+            })
+        })
+        .collect();
 
-    let name_tokens = tokens(&symbol.name);
-    let path_tokens = tokens(&graph.files[symbol.file].path);
-    let mut score = 0;
-    let mut matched_tokens = 0;
-    let mut reason = "substring match";
-    for token in query_tokens {
-        if name_tokens.iter().any(|part| part == token) {
-            score += 700;
-            matched_tokens += 1;
-            reason = "name token";
-        } else if name_tokens.iter().any(|part| part.starts_with(token)) {
-            score += 600;
-            matched_tokens += 1;
-            reason = "name prefix";
-        } else if name.contains(token) {
-            score += 400;
-            matched_tokens += 1;
-            reason = "name substring";
-        } else if path_tokens.iter().any(|part| part == token) {
-            score += 300;
-            matched_tokens += 1;
-            if reason == "substring match" {
-                reason = "path match";
-            }
-        } else if path_tokens.iter().any(|part| part.starts_with(token)) {
-            score += 250;
-            matched_tokens += 1;
-            if reason == "substring match" {
-                reason = "path prefix";
-            }
-        } else if canonical.contains(token) {
-            score += 100;
-            matched_tokens += 1;
+    // Confirmed CALLS are optional relevance evidence only. They never add a
+    // candidate or alter the graph; they merely nudge a textual candidate near
+    // several strong textual candidates upward.
+    let strong_by_symbol: BTreeMap<_, _> = matches
+        .iter()
+        .map(|found| {
+            let id = graph.symbol_candidates(&found.symbol.canonical)[0];
+            (
+                id,
+                found.score >= 1_000_000_000 || found.matched_tokens * 2 >= query_tokens.len(),
+            )
+        })
+        .collect();
+    let score_by_symbol: BTreeMap<_, _> = matches
+        .iter()
+        .map(|found| {
+            let id = graph.symbol_candidates(&found.symbol.canonical)[0];
+            (id, found.score)
+        })
+        .collect();
+    for found in &mut matches {
+        let id = graph.symbol_candidates(&found.symbol.canonical)[0];
+        let neighbors = graph.callers(id).iter().chain(graph.callees(id));
+        let boost: i64 = neighbors
+            .filter(|neighbor| strong_by_symbol.get(neighbor).copied().unwrap_or(false))
+            .map(|neighbor| score_by_symbol.get(neighbor).copied().unwrap_or(0) / 12)
+            .take(3)
+            .sum::<i64>()
+            .min(20_000);
+        if boost > 0 && !strong_by_symbol.get(&id).copied().unwrap_or(false) {
+            found.score += boost;
+            found.reason.push_str(" + structural-neighborhood boost");
         }
     }
-    let minimum_tokens = if query_tokens.len() > 1 { 2 } else { 1 };
-    (matched_tokens >= minimum_tokens).then_some(FindMatch {
-        symbol,
-        score,
-        matched_tokens,
-        reason,
+    matches
+}
+
+#[derive(Clone, Copy)]
+enum SearchField {
+    Identifier,
+    Path,
+    Declaration,
+    Comments,
+    Strings,
+    Body,
+    Test,
+}
+
+impl SearchField {
+    fn weight(self) -> i64 {
+        match self {
+            Self::Identifier => 220,
+            Self::Path => 130,
+            Self::Declaration => 55,
+            Self::Comments => 190,
+            Self::Strings => 75,
+            Self::Body => 8,
+            Self::Test => 60,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Identifier => "identifier match",
+            Self::Path => "path match",
+            Self::Declaration => "declaration match",
+            Self::Comments => "comment/doc match",
+            Self::Strings => "string evidence",
+            Self::Body => "source evidence",
+            Self::Test => "test evidence",
+        }
+    }
+}
+
+fn matching_fields(fact: &SearchFact, term: &str) -> Vec<SearchField> {
+    [
+        (SearchField::Identifier, &fact.identifier),
+        (SearchField::Path, &fact.path),
+        (SearchField::Declaration, &fact.declaration),
+        (SearchField::Comments, &fact.comments),
+        (SearchField::Strings, &fact.strings),
+        (SearchField::Body, &fact.body),
+        (SearchField::Test, &fact.test),
+    ]
+    .into_iter()
+    .filter_map(|(field, values)| {
+        values
+            .iter()
+            .any(|value| term_match(term, value))
+            .then_some(field)
     })
+    .collect()
+}
+
+fn fact_matches(fact: &SearchFact, term: &str) -> bool {
+    !matching_fields(fact, term).is_empty()
+}
+
+fn term_match(query: &str, value: &str) -> bool {
+    query == value || (query.len() >= 4 && (value.starts_with(query) || query.starts_with(value)))
+}
+
+fn discovery_terms(value: &str) -> Vec<String> {
+    let mut terms = BTreeSet::new();
+    for token in tokens(value) {
+        if !is_query_stop_word(&token) {
+            terms.insert(stem_query_token(&token));
+        }
+    }
+    terms.into_iter().collect()
+}
+
+fn stem_query_token(token: &str) -> String {
+    if token.len() > 5 && token.ends_with("ies") {
+        format!("{}y", &token[..token.len() - 3])
+    } else if token.len() > 6 && token.ends_with("ation") {
+        token[..token.len() - 5].to_owned()
+    } else if token.len() > 5 && token.ends_with("ing") {
+        token[..token.len() - 3].to_owned()
+    } else if token.len() > 4 && token.ends_with("ed") {
+        token[..token.len() - 2].to_owned()
+    } else if token.len() > 3 && token.ends_with('s') {
+        token[..token.len() - 1].to_owned()
+    } else {
+        token.to_owned()
+    }
+}
+
+fn is_query_stop_word(token: &str) -> bool {
+    matches!(
+        token,
+        "a" | "an"
+            | "and"
+            | "are"
+            | "at"
+            | "be"
+            | "by"
+            | "do"
+            | "does"
+            | "for"
+            | "from"
+            | "get"
+            | "gets"
+            | "how"
+            | "in"
+            | "is"
+            | "it"
+            | "of"
+            | "on"
+            | "or"
+            | "the"
+            | "to"
+            | "what"
+            | "when"
+            | "where"
+            | "with"
+    )
 }
 
 fn tokens(value: &str) -> Vec<String> {
