@@ -53,7 +53,7 @@ or code intelligence.
 | metadata-only candidate (prior probe) | 0/3 | — | — | 0/3 | 0/3 | 0 | 9 | 8 | 5 | 16 | 177 s |
 | one Codex user skill | 3/3 | 3/3 | `find` (3/3) | 3/3 | 0/3 | 25 | 6 | 9 | 4 | 37 | about 249 s |
 
-The three skill runs reported about 742k input tokens (about 1.5k reasoning
+The three skill runs reported about 742k input tokens (about 1.8k reasoning
 tokens); the explicit MCP smoke test reported another 59k input tokens and
 took 19 seconds. The skill materially changed natural tool selection and was
 therefore productized as the optional one-time `blastray setup codex` command.
