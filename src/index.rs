@@ -19,7 +19,11 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-const CACHE_SCHEMA: u32 = 15;
+// Search terms used to be destructively stemmed at index time.  Schema 17
+// stores source spellings instead; query-time expansion can then try a stem
+// without making a lossy spelling (for example `incoming` -> `incom`) the
+// only evidence available to retrieval.
+const CACHE_SCHEMA: u32 = 17;
 
 pub fn no_supported_source_files_message() -> String {
     language::no_supported_source_files_message()
@@ -927,7 +931,12 @@ fn search_facts(path: &str, source: &str, symbols: &[SymbolFact]) -> Vec<SearchF
                 || before.contains("test_");
             SearchFact {
                 canonical: symbol.canonical.clone(),
-                identifier: search_terms(&format!("{} {}", symbol.name, symbol.canonical)),
+                // Canonical selectors have a separate exact-identity path in
+                // query.rs. Including their file portion here made every
+                // symbol in `middleware/` look like an identifier hit for a
+                // natural-language middleware task, double-counting path
+                // evidence and burying better implementation symbols.
+                identifier: search_terms(&symbol.name),
                 path: path_tokens(path),
                 declaration: search_terms(&declaration.code),
                 comments: search_terms(&evidence.comments),
@@ -1075,23 +1084,7 @@ fn insert_search_term(terms: &mut BTreeSet<String>, current: &mut String) {
     if word.len() < 2 || is_search_stop_word(&word) {
         return;
     }
-    terms.insert(stem(&word));
-}
-
-fn stem(word: &str) -> String {
-    if word.len() > 5 && word.ends_with("ies") {
-        format!("{}y", &word[..word.len() - 3])
-    } else if word.len() > 6 && word.ends_with("ation") {
-        word[..word.len() - 5].to_owned()
-    } else if word.len() > 5 && word.ends_with("ing") {
-        word[..word.len() - 3].to_owned()
-    } else if word.len() > 4 && word.ends_with("ed") {
-        word[..word.len() - 2].to_owned()
-    } else if word.len() > 3 && word.ends_with('s') {
-        word[..word.len() - 1].to_owned()
-    } else {
-        word.to_owned()
-    }
+    terms.insert(word);
 }
 
 fn is_search_stop_word(word: &str) -> bool {

@@ -1,4 +1,12 @@
 # Mission 2 studies
+
+## Mission 30 retrieval lesson
+
+- Textual relevance supplies plausible seeds; bounded confirmed structure
+  corroborates those seeds but never substitutes for unsupported dynamic
+  receiver/interface semantics. A fielded score plus coverage, production
+  priority, and bounded graph mass gives a useful implementation-area selector
+  without inventing graph facts.
 ## GitNexus (commit `932d937085e14664f4ef97b06506bf01034497ab`)
 - Finding: file content hashes classify unchanged, changed, added, and deleted
   files deterministically; incremental work starts from that diff.

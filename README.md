@@ -22,8 +22,10 @@ blastray impact --diff
 ```
 
 `find` accepts an exact symbol or a task/concept-style query. Exact canonical
-and symbol-name matches stay deterministic; task queries use compact local
-source evidence to suggest a small set of places to inspect.
+and symbol-name matches stay deterministic; task queries use local fielded text
+evidence plus bounded confirmed-graph corroboration to suggest implementation
+areas. A limited-confidence result names plausible alternatives rather than
+pretending to prove an unsupported runtime path.
 
 `inspect` returns a compact definition slice alongside confirmed callers,
 callees, call-site evidence, imports, and any relevant unresolved boundaries.

@@ -2,6 +2,16 @@
 
 The index is a small code graph, not a general-purpose database.
 
+## Retrieval schema 17
+
+Schema 17 changes only bounded discovery evidence. `SearchFact` still stores
+per-symbol field term sets rather than raw source, but terms retain their
+normalized source spelling; destructive index-time stemming was removed.
+Query-time variants supply limited morphology. Identifier evidence now stores a
+symbol name rather than the path portion of its canonical selector, avoiding a
+second identifier-strength vote for path text. Canonical selectors remain an
+exact lookup path outside task scoring. Old caches rebuild safely.
+
 Mission 1 entities:
 
 - files

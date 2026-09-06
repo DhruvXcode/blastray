@@ -49,8 +49,8 @@ pub(crate) fn reverse_impact(graph: &Graph, roots: &BTreeSet<usize>) -> ReverseI
 }
 
 pub fn find(graph: &Graph, query: &str) -> String {
-    let query_tokens = discovery_terms(query);
-    let mut matches = discovery_matches(graph, query, &query_tokens);
+    let representation = QueryRepresentation::parse(query);
+    let mut matches = discovery_matches(graph, query, &representation);
 
     if matches.is_empty() {
         return format!("No symbols found for '{query}'.");
@@ -59,13 +59,27 @@ pub fn find(graph: &Graph, query: &str) -> String {
     matches.sort_by(|left, right| {
         right
             .score
-            .cmp(&left.score)
-            .then_with(|| right.matched_tokens.cmp(&left.matched_tokens))
+            .total_cmp(&left.score)
+            .then_with(|| right.matched_terms.cmp(&left.matched_terms))
             .then_with(|| left.symbol.canonical.cmp(&right.symbol.canonical))
     });
     let total = matches.len();
     let shown = total.min(FIND_LIMIT);
     let mut output = String::new();
+    let exact_lookup = matches
+        .first()
+        .is_some_and(|found| found.lexical_score >= 1_000_000.0);
+    if !exact_lookup {
+        let top = &matches[0];
+        let runner_up = matches.get(1);
+        let close_alternative = runner_up.is_some_and(|candidate| {
+            candidate.score >= top.score * 0.88 && candidate.symbol.file != top.symbol.file
+        });
+        let weak_structure = top.structural_score < 0.2 && top.coverage < 0.72;
+        if close_alternative || weak_structure {
+            output.push_str("Retrieval confidence: limited — several relevant areas are close or confirmed structural links are incomplete. Treat the leading results as alternatives, not a proven runtime path.\n");
+        }
+    }
     if shown < total {
         output.push_str(&format!(
             "Showing the top {shown} of {total} ranked matches. Inspect the best plausible result before refining; additional matches are omitted.\n"
@@ -81,30 +95,41 @@ pub fn find(graph: &Graph, query: &str) -> String {
 }
 
 struct FindMatch<'a> {
+    id: usize,
     symbol: &'a Symbol,
-    score: i64,
-    matched_tokens: usize,
+    score: f64,
+    lexical_score: f64,
+    structural_score: f64,
+    matched_terms: usize,
+    #[allow(dead_code)]
+    coverage: f64,
     reason: String,
 }
 
 fn discovery_matches<'a>(
     graph: &'a Graph,
     query: &str,
-    query_tokens: &[String],
+    representation: &QueryRepresentation,
 ) -> Vec<FindMatch<'a>> {
-    if query_tokens.is_empty() {
+    if representation.terms.is_empty() {
         return graph
             .symbols
             .iter()
-            .map(|symbol| FindMatch {
+            .enumerate()
+            .map(|(id, symbol)| FindMatch {
+                id,
                 symbol,
-                score: 1,
-                matched_tokens: 0,
+                score: 1.0,
+                lexical_score: 1.0,
+                structural_score: 0.0,
+                matched_terms: 0,
+                coverage: 0.0,
                 reason: "all symbols".to_owned(),
             })
             .collect();
     }
-    let document_frequency: Vec<usize> = query_tokens
+    let document_frequency: Vec<usize> = representation
+        .terms
         .iter()
         .map(|term| {
             graph
@@ -114,15 +139,8 @@ fn discovery_matches<'a>(
                 .count()
         })
         .collect();
-    let document_count = graph.symbols.len() as i64;
+    let document_count = graph.symbols.len() as f64;
     let query_lower = query.trim().to_lowercase();
-    let compact_identifier = !query.trim().is_empty()
-        && query.trim().chars().all(char::is_alphanumeric)
-        && query_tokens.len() > 1
-        && !graph.symbols.iter().any(|symbol| {
-            symbol.canonical.eq_ignore_ascii_case(&query_lower)
-                || symbol.name.eq_ignore_ascii_case(&query_lower)
-        });
     let mut matches: Vec<_> = graph
         .symbols
         .iter()
@@ -136,82 +154,100 @@ fn discovery_matches<'a>(
                 None
             };
             let fact = graph.search.get(id)?;
-            let mut score = 0_i64;
+            let mut contribution_sum = 0.0;
             let mut matched = 0;
+            let mut coverage_sum = 0.0;
             let mut reasons = Vec::new();
-            for (position, term) in query_tokens.iter().enumerate() {
+            for (position, term) in representation.terms.iter().enumerate() {
                 let fields = matching_fields(fact, term);
                 if fields.is_empty() {
                     continue;
                 }
                 matched += 1;
-                let rarity =
-                    (document_count + 1) * 1_000 / (document_frequency[position] as i64 + 1);
-                let weight = fields.iter().map(|field| field.weight()).max().unwrap_or(0);
-                score += rarity * weight;
+                // BM25F-like bounded field evidence. IDF is logarithmic and
+                // capped, each term selects its strongest field, and extra
+                // fields only corroborate it slightly. This deliberately
+                // prevents a rare comment word from growing without bound.
+                let idf = ((document_count - document_frequency[position] as f64 + 0.5)
+                    / (document_frequency[position] as f64 + 0.5)
+                    + 1.0)
+                    .ln()
+                    .min(3.0);
+                let best = fields
+                    .iter()
+                    .map(|evidence| evidence.field.weight() * evidence.quality)
+                    .fold(0.0_f64, f64::max);
+                coverage_sum += fields
+                    .iter()
+                    .map(|evidence| evidence.field.coverage_weight() * evidence.quality)
+                    .fold(0.0_f64, f64::max);
+                let corroboration = (fields.len().saturating_sub(1) as f64 * 0.12).min(0.36);
+                contribution_sum += (idf * (best + corroboration)).min(8.0);
                 for field in fields {
-                    let label = field.label();
+                    let label = field.field.label();
                     if !reasons.contains(&label) {
                         reasons.push(label);
                     }
                 }
             }
-            let minimum_task_terms = if query_tokens.len() >= 3 { 2 } else { 1 };
-            if (matched < minimum_task_terms
-                || (compact_identifier && matched < query_tokens.len()))
-                && exact.is_none()
-            {
+            let minimum_task_terms = if representation.terms.len() >= 4 {
+                2
+            } else {
+                1
+            };
+            if matched < minimum_task_terms && exact.is_none() {
                 return None;
             }
-            // Reward a coherent task match more than a single accidental word.
-            score += (matched * matched * 2_000) as i64 / query_tokens.len() as i64;
+            // A body-only mention still admits a candidate, but cannot claim
+            // the same concept coverage as an identifier/path/declaration
+            // match. This stops a long enclosing class body from making every
+            // one of its methods look like a complete task answer.
+            let coverage = coverage_sum / representation.terms.len() as f64;
+            // Mean evidence avoids rewarding a long query merely for having
+            // more words. Coverage is intentionally nonlinear: several
+            // independent concepts are more useful than one lexical accident.
+            let mut lexical = (contribution_sum / matched.max(1) as f64) * (0.35 + 0.65 * coverage)
+                + 12.0 * coverage * coverage;
+            if is_non_production(graph, id) && !representation.explicit_test_intent {
+                // Test/example trees often repeat an entire task phrase in
+                // setup names and comments. A clear production prior keeps
+                // them discoverable but prevents that repetition from taking
+                // over ordinary implementation questions.
+                lexical -= 8.0;
+                reasons.push("non-production penalty");
+            }
+            if representation.flow_intent {
+                lexical += match symbol.kind {
+                    crate::index::SymbolKind::Function | crate::index::SymbolKind::Method => 0.7,
+                    crate::index::SymbolKind::Class => 0.15,
+                    crate::index::SymbolKind::Type => -0.8,
+                };
+            }
             if let Some(reason) = exact {
-                score += 1_000_000_000;
+                // Exact lookup is a distinct product path, not a lexical
+                // accident; it remains overwhelmingly decisive by design.
+                lexical += 1_000_000.0;
                 reasons.insert(0, reason);
             }
             Some(FindMatch {
+                id,
                 symbol,
-                score,
-                matched_tokens: matched,
-                reason: reasons.join(" + "),
+                score: lexical,
+                lexical_score: lexical,
+                structural_score: 0.0,
+                matched_terms: matched,
+                coverage,
+                reason: format!(
+                    "{}; coverage {matched}/{}",
+                    reasons.join(" + "),
+                    representation.terms.len()
+                ),
             })
         })
         .collect();
 
-    // Confirmed CALLS are optional relevance evidence only. They never add a
-    // candidate or alter the graph; they merely nudge a textual candidate near
-    // several strong textual candidates upward.
-    let strong_by_symbol: BTreeMap<_, _> = matches
-        .iter()
-        .map(|found| {
-            let id = graph.symbol_candidates(&found.symbol.canonical)[0];
-            (
-                id,
-                found.score >= 1_000_000_000 || found.matched_tokens * 2 >= query_tokens.len(),
-            )
-        })
-        .collect();
-    let score_by_symbol: BTreeMap<_, _> = matches
-        .iter()
-        .map(|found| {
-            let id = graph.symbol_candidates(&found.symbol.canonical)[0];
-            (id, found.score)
-        })
-        .collect();
-    for found in &mut matches {
-        let id = graph.symbol_candidates(&found.symbol.canonical)[0];
-        let neighbors = graph.callers(id).iter().chain(graph.callees(id));
-        let boost: i64 = neighbors
-            .filter(|neighbor| strong_by_symbol.get(neighbor).copied().unwrap_or(false))
-            .map(|neighbor| score_by_symbol.get(neighbor).copied().unwrap_or(0) / 12)
-            .take(3)
-            .sum::<i64>()
-            .min(20_000);
-        if boost > 0 && !strong_by_symbol.get(&id).copied().unwrap_or(false) {
-            found.score += boost;
-            found.reason.push_str(" + structural-neighborhood boost");
-        }
-    }
+    structural_rerank(graph, &mut matches);
+    file_area_rerank(graph, &mut matches);
     matches
 }
 
@@ -227,15 +263,15 @@ enum SearchField {
 }
 
 impl SearchField {
-    fn weight(self) -> i64 {
+    fn weight(self) -> f64 {
         match self {
-            Self::Identifier => 220,
-            Self::Path => 130,
-            Self::Declaration => 55,
-            Self::Comments => 190,
-            Self::Strings => 75,
-            Self::Body => 8,
-            Self::Test => 60,
+            Self::Identifier => 3.5,
+            Self::Path => 2.2,
+            Self::Declaration => 1.7,
+            Self::Comments => 0.8,
+            Self::Strings => 0.65,
+            Self::Body => 0.25,
+            Self::Test => 0.9,
         }
     }
 
@@ -250,9 +286,25 @@ impl SearchField {
             Self::Test => "test evidence",
         }
     }
+
+    fn coverage_weight(self) -> f64 {
+        match self {
+            Self::Identifier | Self::Path => 1.0,
+            Self::Declaration => 0.8,
+            Self::Comments => 0.45,
+            Self::Strings => 0.35,
+            Self::Body => 0.18,
+            Self::Test => 0.5,
+        }
+    }
 }
 
-fn matching_fields(fact: &SearchFact, term: &str) -> Vec<SearchField> {
+struct FieldEvidence {
+    field: SearchField,
+    quality: f64,
+}
+
+fn matching_fields(fact: &SearchFact, term: &QueryTerm) -> Vec<FieldEvidence> {
     [
         (SearchField::Identifier, &fact.identifier),
         (SearchField::Path, &fact.path),
@@ -266,44 +318,210 @@ fn matching_fields(fact: &SearchFact, term: &str) -> Vec<SearchField> {
     .filter_map(|(field, values)| {
         values
             .iter()
-            .any(|value| term_match(term, value))
-            .then_some(field)
+            .filter_map(|value| term_match(term, value))
+            .fold(None, |best, quality| {
+                Some(best.unwrap_or(0.0_f64).max(quality))
+            })
+            .map(|quality| FieldEvidence { field, quality })
     })
     .collect()
 }
 
-fn fact_matches(fact: &SearchFact, term: &str) -> bool {
+fn fact_matches(fact: &SearchFact, term: &QueryTerm) -> bool {
     !matching_fields(fact, term).is_empty()
 }
 
-fn term_match(query: &str, value: &str) -> bool {
-    query == value || (query.len() >= 4 && (value.starts_with(query) || query.starts_with(value)))
+fn term_match(term: &QueryTerm, value: &str) -> Option<f64> {
+    if value == term.original {
+        return Some(1.0);
+    }
+    if term.original.len() >= 4
+        && (value.starts_with(&term.original) || term.original.starts_with(value))
+    {
+        return Some(0.82);
+    }
+    term.variants.iter().find_map(|variant| {
+        (value == variant
+            || (variant.len() >= 4 && (value.starts_with(variant) || variant.starts_with(value))))
+        .then_some(0.62)
+    })
 }
 
-fn discovery_terms(value: &str) -> Vec<String> {
-    let mut terms = BTreeSet::new();
-    for token in tokens(value) {
-        if !is_query_stop_word(&token) {
-            terms.insert(stem_query_token(&token));
+#[derive(Clone, Debug)]
+enum QueryTermKind {
+    Identifier,
+    Acronym,
+    Domain,
+}
+
+#[derive(Clone, Debug)]
+struct QueryTerm {
+    original: String,
+    variants: BTreeSet<String>,
+    #[allow(dead_code)]
+    kind: QueryTermKind,
+}
+
+/// Query representation is deliberately richer than the index representation:
+/// source spellings remain intact in the cache while the query may add a small
+/// number of lower-confidence morphological variants.
+#[derive(Clone, Debug)]
+struct QueryRepresentation {
+    terms: Vec<QueryTerm>,
+    explicit_test_intent: bool,
+    flow_intent: bool,
+    #[allow(dead_code)]
+    removed_procedural_clauses: Vec<String>,
+}
+
+impl QueryRepresentation {
+    fn parse(query: &str) -> Self {
+        let (substantive, removed_procedural_clauses) = strip_procedural_clauses(query);
+        let explicit_test_intent = identifier_words(&substantive).iter().any(|word| {
+            matches!(
+                word.to_lowercase().as_str(),
+                "test" | "tests" | "spec" | "specs" | "fixture" | "fixtures"
+            )
+        });
+        let flow_intent = ["incoming", "reaches", "through", "flow", "path"]
+            .iter()
+            .any(|needle| substantive.contains(needle));
+        let mut terms = BTreeMap::<String, QueryTerm>::new();
+        for raw in identifier_words(&substantive) {
+            let kind =
+                if raw.chars().all(|character| character.is_ascii_uppercase()) && raw.len() >= 2 {
+                    QueryTermKind::Acronym
+                } else if raw.contains('_') || raw.chars().any(char::is_uppercase) {
+                    QueryTermKind::Identifier
+                } else {
+                    QueryTermKind::Domain
+                };
+            for token in split_identifier(&raw) {
+                if token.len() < 2 || is_query_stop_word(&token) {
+                    continue;
+                }
+                terms.entry(token.clone()).or_insert_with(|| QueryTerm {
+                    variants: morphology_variants(&token),
+                    original: token,
+                    kind: kind.clone(),
+                });
+            }
+        }
+        Self {
+            terms: terms.into_values().collect(),
+            explicit_test_intent,
+            flow_intent,
+            removed_procedural_clauses,
         }
     }
-    terms.into_iter().collect()
 }
 
-fn stem_query_token(token: &str) -> String {
-    if token.len() > 5 && token.ends_with("ies") {
-        format!("{}y", &token[..token.len() - 3])
-    } else if token.len() > 6 && token.ends_with("ation") {
-        token[..token.len() - 5].to_owned()
-    } else if token.len() > 5 && token.ends_with("ing") {
-        token[..token.len() - 3].to_owned()
-    } else if token.len() > 4 && token.ends_with("ed") {
-        token[..token.len() - 2].to_owned()
-    } else if token.len() > 3 && token.ends_with('s') {
-        token[..token.len() - 1].to_owned()
-    } else {
-        token.to_owned()
+fn identifier_words(value: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    for character in value.chars() {
+        if character.is_alphanumeric() || character == '_' {
+            current.push(character);
+        } else if !current.is_empty() {
+            words.push(std::mem::take(&mut current));
+        }
     }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+fn split_identifier(value: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut previous_lowercase = false;
+    for character in value.chars() {
+        if character == '_' {
+            if !current.is_empty() {
+                parts.push(std::mem::take(&mut current));
+            }
+            previous_lowercase = false;
+            continue;
+        }
+        if character.is_uppercase() && previous_lowercase && !current.is_empty() {
+            parts.push(std::mem::take(&mut current));
+        }
+        previous_lowercase = character.is_lowercase();
+        current.extend(character.to_lowercase());
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+fn morphology_variants(token: &str) -> BTreeSet<String> {
+    let mut variants = BTreeSet::new();
+    let add = |candidate: String, variants: &mut BTreeSet<String>| {
+        if candidate.len() >= 3 && candidate != token {
+            variants.insert(candidate);
+        }
+    };
+    if token.len() > 5 && token.ends_with("ies") {
+        add(format!("{}y", &token[..token.len() - 3]), &mut variants);
+    } else if token.len() > 5 && token.ends_with("es") {
+        add(token[..token.len() - 2].to_owned(), &mut variants);
+    } else if token.len() > 4 && token.ends_with('s') && !token.ends_with("ss") {
+        add(token[..token.len() - 1].to_owned(), &mut variants);
+    }
+    if token.len() > 5 && token.ends_with("ing") {
+        let base = &token[..token.len() - 3];
+        add(base.to_owned(), &mut variants);
+        add(format!("{base}e"), &mut variants);
+        let base_bytes = base.as_bytes();
+        if base_bytes.len() > 2
+            && base_bytes[base_bytes.len() - 1] == base_bytes[base_bytes.len() - 2]
+        {
+            add(base[..base.len() - 1].to_owned(), &mut variants);
+        }
+    }
+    if token.len() > 4 && token.ends_with("ed") {
+        let base = &token[..token.len() - 2];
+        add(base.to_owned(), &mut variants);
+        add(format!("{base}e"), &mut variants);
+    }
+    if token.len() > 6 && (token.ends_with("tion") || token.ends_with("sion")) {
+        add(token[..token.len() - 3].to_owned(), &mut variants);
+    }
+    variants
+}
+
+/// Remove operational ceremony only when it appears as a clause. A bare word
+/// such as `network` or `test` remains meaningful unless it is inside a phrase
+/// like `do not use network access` or `without running tests`.
+fn strip_procedural_clauses(query: &str) -> (String, Vec<String>) {
+    let lower = query.to_lowercase();
+    let mut removed = Vec::new();
+    let mut kept = String::new();
+    for clause in lower.split_inclusive(['.', ';', '\n']) {
+        let trimmed = clause.trim();
+        let procedural = trimmed.starts_with("without ")
+            || trimmed.starts_with("do not ")
+            || trimmed.starts_with("don't ")
+            || trimmed.starts_with("stop once ")
+            || trimmed.starts_with("do not inspect ")
+            || trimmed.starts_with("do not run ");
+        if procedural {
+            // A common preamble is comma-separated from the actual task.
+            if let Some((ceremony, task)) = trimmed.split_once(',') {
+                removed.push(ceremony.to_owned());
+                kept.push(' ');
+                kept.push_str(task);
+            } else {
+                removed.push(trimmed.to_owned());
+            }
+        } else {
+            kept.push(' ');
+            kept.push_str(trimmed);
+        }
+    }
+    (kept, removed)
 }
 
 fn is_query_stop_word(token: &str) -> bool {
@@ -334,33 +552,213 @@ fn is_query_stop_word(token: &str) -> bool {
             | "when"
             | "where"
             | "with"
+            | "explain"
+            | "identify"
+            | "main"
+            | "code"
+            | "repository"
+            | "enough"
+            | "once"
     )
 }
 
-fn tokens(value: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut previous_lowercase = false;
-    for character in value.chars() {
-        if !character.is_alphanumeric() {
-            if !current.is_empty() {
-                tokens.push(std::mem::take(&mut current));
-            }
-            previous_lowercase = false;
+fn is_non_production(graph: &Graph, symbol: usize) -> bool {
+    let path = graph.files[graph.symbols[symbol].file].path.to_lowercase();
+    path.split('/').any(|part| {
+        matches!(
+            part,
+            "test"
+                | "tests"
+                | "spec"
+                | "specs"
+                | "fixture"
+                | "fixtures"
+                | "example"
+                | "examples"
+                | "benchmark"
+                | "benchmarks"
+                | "sample"
+                | "samples"
+                | "demo"
+                | "demos"
+        )
+    }) || path.contains(".test.")
+        || path.contains(".test-")
+        || path.contains(".spec.")
+        || path.ends_with("_test.go")
+}
+
+/// Rerank only the top bounded lexical pool. Confirmed CALLS, EXTENDS and
+/// IMPLEMENTS edges are used as relevance corroboration; imports never become
+/// symbol-level relationships here. A two-hop contribution is deliberately
+/// small, so this is not an unbounded graph walk.
+fn structural_rerank(graph: &Graph, matches: &mut [FindMatch<'_>]) {
+    const CANDIDATE_POOL: usize = 64;
+    let mut order: Vec<usize> = (0..matches.len()).collect();
+    order.sort_by(|left, right| {
+        matches[*right]
+            .lexical_score
+            .total_cmp(&matches[*left].lexical_score)
+    });
+    order.truncate(CANDIDATE_POOL);
+    let candidates: BTreeSet<usize> = order.iter().map(|index| matches[*index].id).collect();
+    let score_by_symbol: BTreeMap<usize, f64> = order
+        .iter()
+        .map(|index| (matches[*index].id, matches[*index].lexical_score.max(0.0)))
+        .collect();
+    let max_score = score_by_symbol
+        .values()
+        .copied()
+        .fold(0.0_f64, f64::max)
+        .max(1.0);
+    let mut adjacency: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for edge in &graph.dependencies {
+        if candidates.contains(&edge.from) && candidates.contains(&edge.to) {
+            adjacency.entry(edge.from).or_default().push(edge.to);
+            adjacency.entry(edge.to).or_default().push(edge.from);
+        }
+    }
+    // Connected candidate components are a compact approximation of
+    // relevance-walk mass: a cluster of independently retrieved symbols with
+    // confirmed edges is more credible than a one-file lexical pile. Only the
+    // bounded candidate pool participates.
+    let mut component_bonus = BTreeMap::new();
+    let mut seen = BTreeSet::new();
+    for start in &candidates {
+        if !seen.insert(*start) {
             continue;
         }
-        if character.is_uppercase() && previous_lowercase && !current.is_empty() {
-            tokens.push(std::mem::take(&mut current));
+        let mut queue = VecDeque::from([*start]);
+        let mut component = vec![*start];
+        while let Some(current) = queue.pop_front() {
+            for neighbor in adjacency.get(&current).into_iter().flatten() {
+                if seen.insert(*neighbor) {
+                    component.push(*neighbor);
+                    queue.push_back(*neighbor);
+                }
+            }
         }
-        previous_lowercase = character.is_lowercase();
-        current.extend(character.to_lowercase());
+        if component.len() < 2 {
+            continue;
+        }
+        let mass = component
+            .iter()
+            .map(|id| score_by_symbol[id] / max_score)
+            .sum::<f64>();
+        let bonus = ((mass - 1.0) * 0.55).clamp(0.0, 3.0);
+        for symbol in component {
+            component_bonus.insert(symbol, bonus);
+        }
     }
-    if !current.is_empty() {
-        tokens.push(current);
+    for index in order {
+        let symbol = matches[index].id;
+        let direct_neighbors = adjacency.get(&symbol).cloned().unwrap_or_default();
+        let direct = direct_neighbors
+            .iter()
+            .fold(0.0, |sum, neighbor| {
+                sum + score_by_symbol.get(neighbor).copied().unwrap_or(0.0) / max_score
+            })
+            .min(2.5);
+        let two_hop = direct_neighbors
+            .iter()
+            .flat_map(|neighbor| adjacency.get(neighbor).into_iter().flatten().copied())
+            .filter(|neighbor| *neighbor != symbol)
+            .fold(0.0, |sum, neighbor| {
+                sum + score_by_symbol.get(&neighbor).copied().unwrap_or(0.0) / max_score
+            })
+            .min(3.0);
+        // A confirmed implementation chain is stronger corroboration than a
+        // same-file collection of textual hits. Keep it bounded and local,
+        // but let a connected dispatch/validation area outrank an isolated
+        // comment or middleware-name collision.
+        let structural =
+            (direct * 2.4 + two_hop * 0.35 + component_bonus.get(&symbol).copied().unwrap_or(0.0))
+                .min(6.0);
+        if structural > 0.0 {
+            matches[index].structural_score = structural;
+            matches[index].score += structural;
+            matches[index]
+                .reason
+                .push_str(" + confirmed structural corroboration");
+        }
     }
-    tokens.sort();
-    tokens.dedup();
-    tokens
+}
+
+/// A task often names a module before it names a symbol. Within the same
+/// bounded lexical pool, reward a file whose independently matching symbols
+/// agree, while capping the evidence to three symbols so a large file cannot
+/// win just by containing many mediocre hits. This is relevance-only file
+/// evidence: it creates neither a File symbol nor a graph edge.
+fn file_area_rerank(_graph: &Graph, matches: &mut [FindMatch<'_>]) {
+    const CANDIDATE_POOL: usize = 64;
+    let mut order: Vec<usize> = (0..matches.len()).collect();
+    order.sort_by(|left, right| matches[*right].score.total_cmp(&matches[*left].score));
+    order.truncate(CANDIDATE_POOL);
+    let mut scores_by_file: BTreeMap<usize, Vec<f64>> = BTreeMap::new();
+    for index in &order {
+        scores_by_file
+            .entry(matches[*index].symbol.file)
+            .or_default()
+            .push(matches[*index].score.max(0.0) * matches[*index].coverage.max(0.25));
+    }
+    for scores in scores_by_file.values_mut() {
+        scores.sort_by(|left, right| right.total_cmp(left));
+    }
+    for index in order {
+        let scores = &scores_by_file[&matches[index].symbol.file];
+        let best = scores.first().copied().unwrap_or(1.0).max(1.0);
+        let support = scores.iter().skip(1).take(2).sum::<f64>() / best;
+        // File agreement is weaker than confirmed symbol structure: a test or
+        // helper module can contain many similar names. It is a modest tie
+        // breaker, not an alternative graph.
+        let bonus = (support * 0.35).min(0.75);
+        if bonus > 0.0 {
+            matches[index].score += bonus;
+            matches[index].reason.push_str(" + coherent file area");
+        }
+    }
+}
+
+/// Compact development-only visibility into the deterministic pipeline.
+#[allow(dead_code)]
+pub(crate) fn retrieval_diagnostic(graph: &Graph, query: &str) -> String {
+    let representation = QueryRepresentation::parse(query);
+    let mut output = format!("query: {query}\nterms:");
+    for term in &representation.terms {
+        let df = graph
+            .search
+            .iter()
+            .filter(|fact| fact_matches(fact, term))
+            .count();
+        output.push_str(&format!(
+            "\n- {} ({:?}); variants={:?}; df={df}",
+            term.original, term.kind, term.variants
+        ));
+    }
+    if !representation.removed_procedural_clauses.is_empty() {
+        output.push_str(&format!(
+            "\nremoved procedural clauses: {:?}",
+            representation.removed_procedural_clauses
+        ));
+    }
+    output.push_str(&format!(
+        "\nexplicit test intent: {}\ncandidates:",
+        representation.explicit_test_intent
+    ));
+    let mut matches = discovery_matches(graph, query, &representation);
+    matches.sort_by(|left, right| right.score.total_cmp(&left.score));
+    for found in matches.into_iter().take(12) {
+        output.push_str(&format!(
+            "\n- {} lexical={:.2} structural={:.2} final={:.2} coverage={:.0}% area={}",
+            found.symbol.canonical,
+            found.lexical_score,
+            found.structural_score,
+            found.score,
+            found.coverage * 100.0,
+            graph.files[found.symbol.file].path
+        ));
+    }
+    output
 }
 
 pub fn inspect(graph: &Graph, target: &str) -> Result<String, String> {
@@ -786,6 +1184,110 @@ fn is_test_symbol(graph: &Graph, symbol: usize) -> bool {
     let name = graph.symbols[symbol].name.to_lowercase();
     path_marks_test
         || (!graph.search[symbol].test.is_empty() && (name == "test" || name.starts_with("test_")))
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod retrieval_tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::index::Index;
+
+    use super::{QueryRepresentation, discovery_matches};
+
+    static NEXT_REPOSITORY: AtomicUsize = AtomicUsize::new(0);
+
+    fn repository() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "blastray-retrieval-test-{}-{}",
+            std::process::id(),
+            NEXT_REPOSITORY.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(
+            root.join("src/router.ts"),
+            r#"
+            export function matchRoute(request: Request) { return dispatchHandler(request); }
+            export function dispatchHandler(request: Request) { return request; }
+            export function retryBackoff() { return 1; }
+            export function parseGitHistory() { return []; }
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("tests/router.test.ts"),
+            r#"
+            // incoming request route handler middleware fixture
+            export function testRouteDiscoveryFixtureLoading() { return true; }
+            "#,
+        )
+        .unwrap();
+        root
+    }
+
+    fn primary(query: &str) -> String {
+        let root = repository();
+        let index = Index::build(&root).unwrap();
+        let representation = QueryRepresentation::parse(query);
+        let mut matches = discovery_matches(index.graph(), query, &representation);
+        matches.sort_by(|left, right| right.score.total_cmp(&left.score));
+        let answer = matches.first().unwrap().symbol.canonical.clone();
+        fs::remove_dir_all(root).unwrap();
+        answer
+    }
+
+    #[test]
+    fn procedural_clauses_do_not_change_a_route_task_area() {
+        let concise = primary("incoming HTTP request route handler middleware");
+        let verbose = primary(
+            "Without modifying files or running tests, explain how an incoming HTTP request is matched to a route and reaches its handler middleware. Stop once you have enough evidence.",
+        );
+        assert!(concise.starts_with("src/router.ts::"));
+        assert!(verbose.starts_with("src/router.ts::"));
+    }
+
+    #[test]
+    fn procedural_words_do_not_delete_real_domain_terms() {
+        let network = QueryRepresentation::parse("network retry backoff");
+        assert!(network.terms.iter().any(|term| term.original == "network"));
+        assert!(network.terms.iter().any(|term| term.original == "retry"));
+        assert!(
+            QueryRepresentation::parse("do not use network access")
+                .terms
+                .is_empty()
+        );
+
+        let tests = QueryRepresentation::parse("test discovery fixture loading");
+        assert!(tests.explicit_test_intent);
+        assert!(
+            QueryRepresentation::parse("do not run tests")
+                .terms
+                .is_empty()
+        );
+
+        let history = QueryRepresentation::parse("git history parser");
+        assert!(history.terms.iter().any(|term| term.original == "history"));
+        assert!(
+            QueryRepresentation::parse("do not inspect git history")
+                .terms
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn production_beats_a_test_collision_unless_tests_are_requested() {
+        assert!(
+            primary("incoming request route handler middleware").starts_with("src/router.ts::")
+        );
+        assert_eq!(
+            primary("test discovery fixture loading"),
+            "tests/router.test.ts::testRouteDiscoveryFixtureLoading"
+        );
+    }
 }
 
 fn symbol_line(graph: &Graph, symbol: &Symbol) -> String {

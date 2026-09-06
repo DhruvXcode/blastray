@@ -1069,3 +1069,61 @@ discoverable without a task-specific hint. This experiment does not establish
 that GitNexus is better: its extra tools were used, but did not improve the
 four-task correctness total. It does establish that merely making BlastRay MCP
 available did not reduce repository rummaging for this model/configuration.
+
+## Mission 30 deterministic retrieval corpus
+
+Each expected area was source-checked before scoring. `A` means the important
+relationship is represented by the confirmed graph; `B` means the area is
+retrievable but its runtime spine includes dynamic/receiver/framework work the
+graph correctly leaves unresolved.
+
+| set | ecosystem | task | expected area | class | result |
+| --- | --- | --- | --- | --- | --- |
+| development | Go / chi | incoming request routing | `mux.go` (`Mux.ServeHTTP` / `routeHTTP`) | B | top 3; limited confidence on a close middleware alternative |
+| development | Python / PyJWT | decode, signature, claims | `api_jwt.py` / `api_jws.py` validation area | A | primary area |
+| development | JS / node-fetch | fetch, redirect, compressed response | `src/index.js::fetch` support area | B | primary area |
+| development | TS / CodeGraph | prior-delivery session handling | `explore-session-state.ts` / `explore-dedup.ts` | A | primary area |
+| generalization | Go / chi | route registration tree matching | `tree.go` route matching | B | primary |
+| generalization | Go / chi | middleware chain request handler | `chain.go` composition | B | primary |
+| generalization | Go / chi | method-not-allowed response | `methodNotAllowedHandler` | A | primary |
+| generalization | Python / PyJWT | encode/signing/headers | `PyJWS.encode` | A | primary |
+| generalization | Python / PyJWT | audience/issuer/expiry validation | claim-validation area | A | primary |
+| generalization | Python / PyJWT | JWK client cache | `PyJWKClient` area | B | primary |
+| generalization | JS / node-fetch | abort signal/body streaming | `Request` construction/body area | B | primary |
+| generalization | JS / node-fetch | gzip/deflate/brotli | `src/index.js::fetch` | B | primary |
+| generalization | JS / node-fetch | redirect method/body replay | `Request` redirect area | B | primary |
+| generalization | TS / CodeGraph | natural-language query parsing | `query-parser.ts::parseQuery` | A | primary |
+| generalization | TS / CodeGraph | session project lifecycle | `explore-session-state.ts` | A | primary |
+| generalization | TS / CodeGraph | relevance/path/traversal | search/context relevance area | B | primary |
+| generalization | TS / CodeGraph | test fixture loading | test/fixture area | B | primary |
+
+The 13 generalization cases were primary-area hits; all 17 development plus
+generalization cases appeared in the top three. A concise and a coding-agent
+ceremony route task remain in the same `src/router.ts` area in the focused
+regression test. Procedural pairs retain `network retry backoff`, `test
+discovery fixture loading`, and `git history parser`, while not turning `do
+not use network access`, `do not run tests`, or `do not inspect git history`
+into retrieval concepts.
+
+chi is deliberately a limited-confidence B result. Its relevant router area
+is discoverable, but dynamic receiver/interface composition is not promoted to
+a fabricated CALLS path merely to force a single runtime root.
+
+Release-mode comparison against `bf6b69a` was run on this machine using the
+same source snapshots and a natural-language task find. Timings include process
+startup and the ordinary source-hash freshness work; they are engineering
+observations, not a latency promise.
+
+| repository | version | cold task find | warm task find | cache bytes | binary bytes |
+| --- | --- | ---: | ---: | ---: | ---: |
+| BlastRay (small, 28 source files) | `bf6b69a` | 0.13 s | 0.04 s | 1,485,925 | 14,232,680 |
+| BlastRay (small) | Retrieval 2.0 | 0.17 s | 0.04 s | 1,545,695 | 14,255,368 |
+| CodeGraph source (substantial) | `bf6b69a` | 2.02 s | 0.27 s | 12,906,836 | 14,232,680 |
+| CodeGraph source (substantial) | Retrieval 2.0 | 2.01 s | 0.28 s | 12,866,254 | 14,255,368 |
+
+Schema 17 invalidates old caches because terms now preserve raw normalized
+spellings and the identifier field no longer duplicates canonical path tokens.
+On the small repository that costs 59,770 bytes (about 4%); on the substantial
+repository it saves 40,582 bytes. Structural reranking is bounded to 64 lexical
+candidates and local one/two-hop/component evidence, so it did not create a
+material warm-query regression in this sample.

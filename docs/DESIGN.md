@@ -28,6 +28,26 @@ source -> parse -> resolve -> graph -> query -> CLI/MCP
 
 Each stage must earn its complexity through a current user-facing need.
 
+## Retrieval Engine 2.0
+
+Task retrieval is a relevance layer, separate from graph truth. The cache keeps
+bounded, source-derived terms per symbol; query parsing preserves source
+spellings and adds a few morphological variants instead of destructively
+stemming either side. A compact BM25F-like score uses capped logarithmic IDF,
+stronger identifier/path/declaration fields, weak body/doc evidence, weighted
+concept coverage, and a production prior. Exact canonical/name lookup remains
+a separate decisive path.
+
+The lexical candidate pool is capped at 64 symbols. Confirmed `CALLS`,
+`EXTENDS`, and `IMPLEMENTS` edges provide bounded one/two-hop and connected
+component corroboration; same-file agreement is only a small tie-breaker.
+`IMPORTS` remains relevance/context evidence, never a synthetic symbol call.
+
+This improves area discovery, not graph completeness. Dynamic receiver,
+interface, framework, and value-flow paths stay unresolved. When leading areas
+are close or structural corroboration is weak, `find` reports limited retrieval
+confidence instead of presenting a proven flow.
+
 BlastRay is a sugar layer: it should improve an existing repository without
 making that repository feel like a BlastRay project. Future generated state is
 reconstructible under `.blastray/`; BlastRay must not silently edit tracked
