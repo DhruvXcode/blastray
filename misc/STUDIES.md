@@ -132,3 +132,6 @@
 
 ## Mission 25 utility lesson
 - A structural result earns its transport overhead only when it displaces the follow-up work it invites: one decisive `find` plus one inspect helped node-fetch, while distributed paths triggered serial inspections and source rereads that made equal-quality answers more expensive.
+
+## Mission 26 connected-context lesson
+- A source-checked connected packet can statically cover a distributed path and still fail its purpose if agents reopen its previews for reassurance. Treat serial inspect reduction as an independent acceptance measure, not an inference from packet completeness or answer quality.

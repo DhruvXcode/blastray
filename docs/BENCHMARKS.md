@@ -188,6 +188,55 @@ can answer these multi-method questions without serial inspections. It should
 not add a tool, provider semantics, or another agent integration. No Mission
 26 host-integration work is justified by this failure.
 
+## Mission 26 connected-context investigation — NO SHIP
+
+Mission 26 tested an unshipped `inspect(target, focus?)` candidate on the exact
+Mission 25 commits and answer keys. `focus` was explicit task wording, not
+session state. Its packet retained selected-symbol source as primary and added
+at most four current-source previews selected only from a confirmed direct
+CALLS neighbor, the same defining file, or an unresolved-call-name lexical
+match explicitly labeled as relevance rather than graph truth. Candidate bounds
+were four symbols, 36 source lines per preview, and 8,000 connected-context
+characters. No provider fact, edge type, language, MCP tool, or agent
+integration changed.
+
+Static source review found that one focused chi inspection exposed `ServeHTTP`
+pool/context setup; `Use`; middleware construction; `routeHTTP` including
+`FindRoute` and 404/405 branches; and registration through `handle`/`InsertRoute`.
+One focused PyJWT inspection exposed payload decoding, `_validate_claims`, and
+the task-relevant `PyJWS.decode_complete` source preview (labeled as an
+unresolved-call-name relevance match), including signature verification
+landmarks. Each new fact was checked against the pinned source. Thus both
+frozen answer keys were statically supportable from `find + inspect`; node-fetch
+needed no focus and its normal packet was unchanged.
+
+| frozen repository | pre-candidate normal inspect response | focused candidate response | static result |
+| --- | ---: | ---: | --- |
+| chi | 1,932 bytes | 7,488 bytes | all four facts source-supported in one focused inspect |
+| PyJWT | 3,115 bytes | 11,818 bytes | all four facts source-supported in one focused inspect |
+| node-fetch | 1,669 bytes | 1,669 bytes | exact normal-inspect regression unchanged |
+
+Sizes are one JSON-RPC tool-result line, including its envelope; the focused
+packet growth stayed inside the proposed connected-context cap but was still
+substantial for PyJWT. The normal node-fetch path did not activate the packet.
+
+Three permitted read-only Codex runs used codex-cli 0.153.4, gpt-5.6-terra,
+high reasoning, frozen prompts, the current candidate skill, normal shell/read
+tools, and no edits/tests/network. The first chi development run showed that a
+short preview still omitted `FindRoute`; it was corrected before one final chi
+development run. That final answer preserved all four facts, but used `find +
+8 inspect` (9 MCP calls) plus two shell actions: 11 major actions versus the
+frozen bare 6, and only a modest improvement over M25's 10 serial inspections.
+The PyJWT holdout preserved all four facts with `find + 3 inspect` (4 MCP calls)
+and two shell actions: 6 major actions versus bare 7 and M25 BlastRay's 12;
+it made no successful source reread. The attempted final shell search failed
+because this environment lacks `rg`.
+
+The candidate therefore passed static fact coverage, the PyJWT holdout, source
+synchronization, and node-fetch compactness, but failed the required chi
+action/serial-inspection bar. It was discarded rather than shipped: a response
+packet is not a product win when the agent still re-interrogates its previews.
+
 ## Mission 1 baseline
 
 Measured before the Mission 2 change at commit `0178b5e`, in release mode:
