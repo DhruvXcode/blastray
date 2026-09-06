@@ -1,0 +1,61 @@
+{
+  "protocol_version": 1,
+  "agent": {
+    "cli": "codex-cli 0.153.4",
+    "model": "gpt-5.6-terra",
+    "reasoning_effort": "high",
+    "budget": "one fresh non-interactive run per task/condition; no web access"
+  },
+  "products": {
+    "blastray": { "commit": "a10f6c5", "integration": "stdio MCP: find, inspect, trace, impact" },
+    "gitnexus": { "npm_version": "1.6.11", "git_commit": "c0c3fa18a9b27d210099f908095fec373dd3d2d5", "integration": "documented Codex MCP plus generated repository AGENTS/skills" }
+  },
+  "tasks": [
+    {
+      "id": "js-uuid",
+      "repo": "https://github.com/uuidjs/uuid",
+      "parent": "6adcc1d81bfaeb653c49d9b7ca7b0579244ae60c",
+      "fix": "b1da338",
+      "language": "TypeScript",
+      "prompt": "Randomly generated node identifiers in time-based UUIDs must follow the multicast-bit requirement. Implement the behavioral correction without changing caller-provided node identifiers. Add focused coverage and run the relevant tests.",
+      "hidden_check": "apply upstream v1/v6 regression tests, then npm test",
+      "existing_check": "npm test"
+    },
+    {
+      "id": "go-uuid",
+      "repo": "https://github.com/google/uuid",
+      "parent": "6e10cd1027e225e3ad7bfcc13c896abd165b02ef",
+      "fix": "53dda83",
+      "language": "Go",
+      "prompt": "Version 6 UUIDs do not preserve their timestamp correctly when generated and later read through the library API. Correct the version-6 timestamp layout and decoding while preserving the other UUID versions. Add focused coverage and run the relevant tests.",
+      "hidden_check": "generated v6 timestamp round-trip evaluator plus go test ./...",
+      "existing_check": "go test ./..."
+    },
+    {
+      "id": "aho-corasick",
+      "repo": "https://github.com/BurntSushi/aho-corasick",
+      "parent": "c82178696b9ddc18b56c3c74853529e7926ff329",
+      "fix": "b68c8d5",
+      "language": "Rust",
+      "prompt": "Applying a large offset to a search match can overflow inconsistently with the library's span behavior. Make the public match-offset behavior safe and consistent, document the contract, and run focused tests.",
+      "hidden_check": "overflow behavior evaluator plus cargo test --lib",
+      "existing_check": "cargo test --lib"
+    },
+    {
+      "id": "gson",
+      "repo": "https://github.com/google/gson",
+      "parent": "ed2397502708ebaba53643e5c3d60e0974d7045f",
+      "fix": "004e7a49",
+      "language": "Java",
+      "prompt": "The streaming JSON reader rejects valid large numeric literals in a boundary case even though they should remain readable by the normal numeric path. Correct that acceptance bug without weakening malformed-number validation. Add focused coverage and run the relevant tests.",
+      "hidden_check": "apply upstream JsonReader regression test, then Maven JsonReaderTest",
+      "existing_check": "mvn -q -pl gson -Dtest=JsonReaderTest test (JDK 21)"
+    }
+  ],
+  "run_order": [
+    ["bare", "blastray", "gitnexus"],
+    ["gitnexus", "bare", "blastray"],
+    ["blastray", "gitnexus", "bare"],
+    ["bare", "gitnexus", "blastray"]
+  ]
+}

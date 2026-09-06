@@ -789,3 +789,56 @@ definition; `impact` then returns `ConcreteStore -> IMPLEMENTS Store` and the
 transitive `SpecializedStore -> EXTENDS ConcreteStore`. The controlled diff
 test changes `Store` by adding a member and obtains those same confirmed
 dependents through `impact --diff`.
+
+## Mission 22 controlled coding-agent comparison
+
+This is a small controlled engineering experiment, not a claim of universal
+agent superiority. BlastRay was frozen at `a10f6c5`; GitNexus was `1.6.11`
+(`c0c3fa18a9b27d210099f908095fec373dd3d2d5`) with its documented Codex setup
+(MCP, generated repository instructions/skills, and hooks). Every cell used a
+fresh `codex-cli 0.153.4` conversation, `gpt-5.6-terra`, high reasoning effort,
+the same prompt, a fresh source-only worktree, and normal shell/edit/search
+tools. Agent prompts prohibited network, history, issue, and upstream-patch
+lookup. Tool indexing was prepared before agent timing and recorded separately.
+
+Four previously unused public repositories were fixed at the parent of a real
+upstream fix: uuidjs/uuid `6adcc1d` (TypeScript multicast node bit),
+google/uuid `6e10cd1` (Go v6 timestamp), BurntSushi/aho-corasick `c821786`
+(Rust match-offset overflow), and google/gson `ed23975` (Java large-number
+parsing). The corresponding upstream checks were hidden; the Java test was
+clean-built to avoid copied build-output timestamps masking source changes.
+The exact prompts, pins, checks, runner, and machine-readable results are in
+`misc/agent-benchmark/`.
+
+| task | bare | BlastRay | GitNexus |
+| --- | --- | --- | --- |
+| uuidjs/uuid | hidden pass; existing pass | hidden pass; existing pass | hidden pass; existing pass |
+| google/uuid | hidden pass; existing pass | hidden pass; existing pass | hidden pass; existing pass |
+| aho-corasick | hidden pass; existing pass | hidden pass; existing pass | hidden pass; existing pass |
+| Gson | hidden fail; existing fail | hidden fail; existing pass | hidden fail; existing pass |
+
+Correctness therefore tied on three tasks and all conditions missed the Java
+target; no efficiency comparison overrides that result. On the three ties,
+bare was lowest-work in every case (6–9 commands versus BlastRay 8–12 and
+GitNexus 7–13). BlastRay was never selected by the agent in this suite: all
+BlastRay cells made zero MCP calls, while GitNexus made five MCP calls in the
+TypeScript and Java cells. GitNexus's query/change-analysis surface was useful
+for locating and reviewing code, but it also added 13–53 seconds of ready-state
+setup here (BlastRay 0–1 seconds after its release binary was built) and agents
+sometimes refreshed its graph during execution. One GitNexus run also bootstrapped
+local tool packages during execution; no upstream repository content was
+consulted, but that is lifecycle overhead worth retaining as evidence.
+
+Representative ready-state sizes were BlastRay/GitNexus respectively: uuid
+171 KB/29 MB, Go UUID 217 KB/29 MB, aho-corasick 1.1 MB/78 MB, and Gson
+7.1 MB/131 MB. Agent wall time and token counts, plus command/read/search/MCP
+counts, are retained per cell in `results.json`; the Java BlastRay cell is the
+important negative outlier (835 s, 42 commands, 2.76M input tokens) and still
+missed the hidden regression.
+
+The primary next product lesson is not a graph change: BlastRay needs an agent
+onboarding/query affordance that makes its existing four operations naturally
+discoverable without a task-specific hint. This experiment does not establish
+that GitNexus is better: its extra tools were used, but did not improve the
+four-task correctness total. It does establish that merely making BlastRay MCP
+available did not reduce repository rummaging for this model/configuration.

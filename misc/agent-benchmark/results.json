@@ -1,0 +1,18 @@
+{
+  "protocol_version": 1,
+  "note": "One fresh Codex run per cell. Hidden means the upstream/equivalent regression check; existing means the candidate's pre-existing focused suite. Correctness is lexicographic over all other fields.",
+  "runs": [
+    {"task":"js-uuid","condition":"bare","hidden":"PASS","existing":"PASS","seconds":111,"setup_seconds":0,"commands":9,"reads":3,"searches":3,"mcp":0,"before_edit":4,"input_tokens":309777},
+    {"task":"js-uuid","condition":"blastray","hidden":"PASS","existing":"PASS","seconds":119,"setup_seconds":0,"commands":8,"reads":3,"searches":3,"mcp":0,"before_edit":4,"input_tokens":339949},
+    {"task":"js-uuid","condition":"gitnexus","hidden":"PASS","existing":"PASS","seconds":138,"setup_seconds":26,"commands":7,"reads":4,"searches":2,"mcp":5,"before_edit":7,"input_tokens":494319},
+    {"task":"go-uuid","condition":"bare","hidden":"PASS","existing":"PASS","seconds":128,"setup_seconds":0,"commands":6,"reads":2,"searches":3,"mcp":0,"before_edit":4,"input_tokens":197508},
+    {"task":"go-uuid","condition":"blastray","hidden":"PASS","existing":"PASS","seconds":145,"setup_seconds":0,"commands":10,"reads":5,"searches":5,"mcp":0,"before_edit":7,"input_tokens":273738},
+    {"task":"go-uuid","condition":"gitnexus","hidden":"PASS","existing":"PASS","seconds":318,"setup_seconds":13,"commands":13,"reads":5,"searches":5,"mcp":0,"before_edit":7,"input_tokens":590402},
+    {"task":"aho-corasick","condition":"bare","hidden":"PASS","existing":"PASS","seconds":69,"setup_seconds":0,"commands":8,"reads":4,"searches":6,"mcp":0,"before_edit":6,"input_tokens":297924},
+    {"task":"aho-corasick","condition":"blastray","hidden":"PASS","existing":"PASS","seconds":86,"setup_seconds":0,"commands":12,"reads":9,"searches":9,"mcp":0,"before_edit":9,"input_tokens":443839},
+    {"task":"aho-corasick","condition":"gitnexus","hidden":"PASS","existing":"PASS","seconds":135,"setup_seconds":53,"commands":10,"reads":8,"searches":8,"mcp":0,"before_edit":8,"input_tokens":434537},
+    {"task":"gson","condition":"bare","hidden":"FAIL","existing":"FAIL","seconds":187,"setup_seconds":0,"commands":11,"reads":7,"searches":8,"mcp":0,"before_edit":7,"input_tokens":376739},
+    {"task":"gson","condition":"blastray","hidden":"FAIL","existing":"PASS","seconds":835,"setup_seconds":1,"commands":42,"reads":20,"searches":14,"mcp":0,"before_edit":7,"input_tokens":2758038},
+    {"task":"gson","condition":"gitnexus","hidden":"FAIL","existing":"PASS","seconds":308,"setup_seconds":45,"commands":18,"reads":8,"searches":12,"mcp":5,"before_edit":14,"input_tokens":1100706}
+  ]
+}
