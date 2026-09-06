@@ -50,7 +50,9 @@ server carries this guidance itself. BlastRay never writes `AGENTS.md`,
 If you use Codex, `blastray setup codex` registers the installed binary with
 Codex and installs one small user-scoped discovery skill at
 `~/.agents/skills/blastray/SKILL.md`. It is idempotent and leaves existing
-BlastRay registrations or a user-authored skill untouched. This is optional:
+equivalent BlastRay registrations or a user-authored skill untouched; a
+different or stale `blastray` MCP registration is reported as a conflict and
+is never overwritten. This is optional:
 normal BlastRay use still has zero per-repository setup, and no repository
 instruction files are generated.
 

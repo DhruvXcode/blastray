@@ -38,6 +38,11 @@ MCP server instructions, tool descriptions, input schemas, and annotations to
 teach a connected agent when the existing four operations help. It must not
 modify a repository merely to teach agents how to use BlastRay.
 
+A code-intelligence call earns its place only when it removes more agent work
+than it creates. Structural discovery should lead with one plausible location,
+bounded inspection, and an explicit stopping point; it is not a ritual that
+requires every available operation.
+
 Portable MCP guidance is the first layer. Where a host demonstrably does not
 select that guidance, BlastRay may offer one small host-native, user-scoped
 discovery bridge. The bridge registers the same MCP server and teaches the same

@@ -126,3 +126,6 @@
 ## Mission 23 onboarding lesson
 - CodeGraph (commit `b9ca4b7981116909900368cc1686a1074cd4d4c1`) demonstrates that MCP initialization instructions and a strongly decision-oriented primary exploration surface can make an indexed capability legible without repository-file injection. GitNexus demonstrates that generated agent context, skills, and editor integration can increase teaching coverage but also create lifecycle and repository-footprint costs. BlastRay retains concise MCP guidance plus small redundancy in the four tool descriptions and schemas; it does not adopt generated repository instructions, hooks, plugins, aliases, or a broader tool surface.
 - Mission 23B: MCP-native guidance alone produced 0/3 natural Codex selections in the controlled probe. One tiny user-scoped Codex skill produced 3/3 selections without repository injection, so a host-native discovery bridge can be warranted when measured; it should remain one optional user integration, not a repository lifecycle feature.
+
+## Mission 24 action-economy lesson
+- A discovery instruction must name both the first action and the stopping boundary: treating find, inspect, trace, and impact as equal steps causes synonym searches and unnecessary verification even when the graph has already located the implementation.

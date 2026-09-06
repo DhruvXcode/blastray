@@ -1694,7 +1694,7 @@ mod tests {
         let multi_word = query::find(index.graph(), "incremental index");
         assert!(multi_word.contains("src/incremental-index.ts::rebuildIncrementalIndex"));
         let capped = query::find(index.graph(), "analyze");
-        assert!(capped.starts_with("Showing 20 of 25 matches; refine the query."));
+        assert!(capped.starts_with("Showing the top 20 of 25 ranked matches."));
         assert_eq!(capped, query::find(index.graph(), "analyze"));
     }
 

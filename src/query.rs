@@ -68,7 +68,7 @@ pub fn find(graph: &Graph, query: &str) -> String {
     let mut output = String::new();
     if shown < total {
         output.push_str(&format!(
-            "Showing {shown} of {total} matches; refine the query.\n"
+            "Showing the top {shown} of {total} ranked matches. Inspect the best plausible result before refining; additional matches are omitted.\n"
         ));
     }
     output.push_str(&format!("{shown} symbol(s):\n"));

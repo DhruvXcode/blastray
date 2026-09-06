@@ -62,6 +62,61 @@ skill and performed a broad shell listing/search before its first `find`. This
 is a small controlled adoption probe, not universal evidence or a correctness
 benchmark.
 
+## Mission 24 action-economy gate
+
+Mission 24 audited the retained M23B JSONL before changing anything. The raw
+completed-call audit finds 39 tool actions and 26 MCP calls (Cobra 17/13,
+p-limit 9/4, ItsDangerous 13/9); the earlier compact table reported 37/25.
+This one-action discrepancy is retained here rather than hidden: the raw
+transcripts are the authoritative per-call evidence below.
+
+| repository | raw M23B MCP sequence | classification (essential / useful / redundant / caused by insufficient earlier result) | trace diagnosis |
+| --- | --- | --- | --- |
+| Cobra | find, inspect `Command`, three refined/synonym finds, six implementation inspections, two flag-group finds | 2 / 8 / 2 / 1 | `Command` was a broad type result; the "refine" banner and peer-operation skill led to repeated finds and a broad source reread. |
+| p-limit | find, inspect `pLimit`, inspect validation, impact | 2 / 1 / 1 / 0 | The two inspections already established the implementation and direct helper; `impact` duplicated that evidence. |
+| ItsDangerous | find, four inspections, four impacts | 4 / 2 / 3 / 0 | The timed/source inspections supplied the answer; three zero or incomplete impact calls added no answer-relevant fact. |
+
+The excess was primarily routing/stopping, not provider intelligence. All three
+agents loaded the selected skill through shell and coupled that with a broad
+listing/search before first `find`; Cobra then reacted to the find banner's
+"refine" imperative with synonym queries. `inspect` did supply the necessary
+bounded local source, but agents sometimes reread it for reassurance. No graph
+or provider semantics changed.
+
+The candidate keeps one 164-word user skill (M23B: 162 words). Its description
+now makes BlastRay the first structural pass before broad grep/read; its body
+says to use one natural-language `find`, inspect the best plausible result,
+then stop unless evidence is incomplete. `trace` and `impact` are explicitly
+conditional. `find` still displays at most 20 deterministic matches, but its
+unchanged ranking now says to inspect the best plausible result before refining;
+`inspect` output did not change.
+
+The first Cobra development probe was complete and reduced work from 17 major
+actions / 13 MCP calls to 12 / 7 in 85.5 s. One stronger no-listing wording was
+then tried once; it regressed to 13 / 8 and did not remove the host's skill-load
+shell action, so it was reverted before holdouts. The two frozen holdouts used
+the prior candidate once each; prompts prohibited edits, tests, and agent
+network use. A useful p-limit answer had to identify `pLimit`, its
+queue/active-count gate, and `validateConcurrency`; a useful ItsDangerous
+answer had to distinguish URL-safe composition, timestamp/expiry enforcement,
+`max_age` forwarding, and token/fallback compatibility.
+
+| holdout | previous raw major / MCP / search / source-read actions | M24 major / MCP / search / source-read actions | find before broad rummaging | answer-quality check | elapsed / reported input |
+| --- | ---: | ---: | --- | --- | --- |
+| p-limit | 9 / 4 / 3 / 3 | 6 / 3 / 2 / 2 | yes | passed | 63.0 s / 134k |
+| ItsDangerous | 13 / 9 / 4 / 3 | 9 / 5 / 2 / 2 | no | passed | 73.6 s / 172k |
+| total | 22 / 13 / 7 / 6 | 15 / 8 / 4 / 4 | 1/2 | 2/2 | 136.6 s / 306k |
+
+Search/read figures classify a completed shell command that contains a broad
+search/listing or source-read operation; they are not mutually exclusive with
+major actions. The holdouts retained natural adoption and `find -> inspect`
+(2/2) while cutting major actions 32%, MCP calls 38%, search actions 43%, and
+source-read actions 33%. The `find`-before-rummaging result improved from
+M23B's 0/3 but did not reach 2/2, so this remains a bounded internal gate, not
+a general efficiency claim. Four new completed agent runs were used (two Cobra
+development probes and two holdouts); an earlier sandbox-blocked CLI attempt
+never reached the model and is not counted.
+
 ## Mission 1 baseline
 
 Measured before the Mission 2 change at commit `0178b5e`, in release mode:
