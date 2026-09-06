@@ -10,6 +10,58 @@ BlastRay will eventually measure:
 - relationship-resolution accuracy
 - effect on coding-agent repository exploration and tool usage
 
+## Mission 23 MCP-native adoption probe (not a success result)
+
+This deliberately small natural-selection probe used fresh `codex-cli 0.153.4`
+contexts with `gpt-5.6-terra` at high reasoning. The agent could use normal
+shell/filesystem tools and the configured local MCP server; prompts asked only
+for a code-investigation explanation and change surface, prohibited edits,
+tests, and network access, and did not name the product or any of its tools.
+
+The three public repositories were ItsDangerous (Python,
+`672971d66a2ef9f85151e53283113f33d642dabd`), Cobra (Go,
+`adbc8813901bba65827259daa8e22ff94ec1f30e`), and p-limit (JavaScript,
+`783068bb9e967fd7bea8642e1bf5a3627fe38bdf`). They were not part of the
+existing BlastRay studies or benchmarks. The baseline was `a10f6c5`; the
+candidate changed only MCP-native instructions/metadata.
+
+| condition | natural adoption | first BlastRay operation | `find` before broad rummaging | `find -> inspect` | major shell actions | grep/search actions | source-read actions | actions before useful location | elapsed |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| before (3 runs) | 0/3 | — | 0/3 | 0/3 | 13 | 9 | 6 | 3 | 294 s |
+| after, revised metadata (3 runs) | 0/3 | — | 0/3 | 0/3 | 16 | 9 | 8 | 5 | 177 s |
+
+One shell command can contain multiple operations, so search/read counts are
+action classes rather than mutually exclusive totals. A preliminary fourth
+candidate run on the ItsDangerous prompt also had zero adoption; the direct
+`find` trigger was then made more explicit and the same three frozen prompts
+were rerun. Across all seven bounded runs, model-reported input was about
+987k tokens and wall time about 8.8 minutes. This is a failed discoverability
+probe, not a claim about correctness or general agent behavior: the agent
+consistently started with shell search/read despite receiving the MCP surface.
+
+## Mission 23B Codex user-skill probe
+
+The same frozen prompts, repositories, Codex version, model, and reasoning
+configuration were then used once each with exactly one user-scoped skill at
+`~/.agents/skills/blastray/SKILL.md`. The MCP transport was first proven with a
+separate explicit diagnostic call; that smoke test is not adoption evidence.
+The three ordinary prompts did not mention BlastRay, MCP, any operation name,
+or code intelligence.
+
+| condition | natural adoption | skill observably loaded | first BlastRay operation | `find -> inspect` | `find` before broad rummaging | MCP calls | shell search actions | file-read actions | actions before useful location | total major actions | elapsed |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| metadata-only candidate (prior probe) | 0/3 | — | — | 0/3 | 0/3 | 0 | 9 | 8 | 5 | 16 | 177 s |
+| one Codex user skill | 3/3 | 3/3 | `find` (3/3) | 3/3 | 0/3 | 25 | 6 | 9 | 4 | 37 | about 249 s |
+
+The three skill runs reported about 742k input tokens (about 1.5k reasoning
+tokens); the explicit MCP smoke test reported another 59k input tokens and
+took 19 seconds. The skill materially changed natural tool selection and was
+therefore productized as the optional one-time `blastray setup codex` command.
+It did not yet eliminate Codex's initial shell scan: each run read the selected
+skill and performed a broad shell listing/search before its first `find`. This
+is a small controlled adoption probe, not universal evidence or a correctness
+benchmark.
+
 ## Mission 1 baseline
 
 Measured before the Mission 2 change at commit `0178b5e`, in release mode:

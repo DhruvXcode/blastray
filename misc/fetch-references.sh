@@ -15,5 +15,6 @@ fetch() {
 }
 
 fetch gitnexus https://github.com/abhigyanpatwari/GitNexus
+fetch codegraph https://github.com/colbymchenry/codegraph
 fetch kodegraf https://github.com/DeRaowl/Kodegraf
 fetch stockfish https://github.com/official-stockfish/Stockfish

@@ -33,6 +33,17 @@ making that repository feel like a BlastRay project. Future generated state is
 reconstructible under `.blastray/`; BlastRay must not silently edit tracked
 `.gitignore` or agent instruction files.
 
+Agent discoverability is part of the interface. BlastRay should use standard
+MCP server instructions, tool descriptions, input schemas, and annotations to
+teach a connected agent when the existing four operations help. It must not
+modify a repository merely to teach agents how to use BlastRay.
+
+Portable MCP guidance is the first layer. Where a host demonstrably does not
+select that guidance, BlastRay may offer one small host-native, user-scoped
+discovery bridge. The bridge registers the same MCP server and teaches the same
+four-operation decision model; it is not repository initialization, a skill
+framework, or an extra intelligence surface.
+
 ## Mission 1 boundary
 
 Mission 1 builds the graph in memory on each CLI invocation. Only confirmed
@@ -222,3 +233,17 @@ Completeness therefore describes only the supported proven-dependency subset:
 it lists target-name-relevant unresolved/ambiguous facts when present and
 otherwise explicitly retains the dynamic/unsupported boundary. `impact --diff`
 uses the same traversal after its existing conservative changed-symbol mapping.
+
+## Mission 23 boundary
+
+MCP initialization returns a short local-analysis playbook and the four
+existing tools carry decision-oriented descriptions, parameter affordances, and
+truthful annotations. `find` is the entry point for unfamiliar natural-language
+tasks; `inspect` supplies bounded synchronized source context; `trace` requires
+known endpoints; and `impact` is the pre-/post-edit structural check.
+
+These are interface metadata only. The tools may refresh reconstructible
+`.blastray` cache state, so their `readOnlyHint` is deliberately false; they
+are nevertheless non-destructive, idempotent local operations with no open
+world interaction. No repository instruction files, resources, prompts, tools,
+graph semantics, retrieval, or source-language behavior are added.

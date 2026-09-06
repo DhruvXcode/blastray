@@ -73,6 +73,7 @@ struct Mcp {
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     next_id: u64,
+    initialization: Value,
 }
 
 impl Mcp {
@@ -92,6 +93,7 @@ impl Mcp {
             input,
             output,
             next_id: 1,
+            initialization: Value::Null,
         };
         let initialized = mcp.request(
             "initialize",
@@ -103,6 +105,7 @@ impl Mcp {
         );
         assert_eq!(initialized["result"]["capabilities"], json!({"tools": {}}));
         mcp.notify("notifications/initialized", json!({}));
+        mcp.initialization = initialized;
         mcp
     }
 
@@ -259,6 +262,16 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
     );
     let mut mcp = Mcp::start(&repo);
 
+    let instructions = mcp.initialization["result"]["instructions"]
+        .as_str()
+        .expect("initialize advertises server instructions");
+    assert!(instructions.contains("start with find"));
+    assert!(instructions.contains("natural-language task"));
+    assert!(instructions.contains("inspect"));
+    assert!(instructions.contains("impact(\"@diff\")"));
+    assert!(instructions.contains("normal grep/read"));
+    assert!(instructions.contains("not mean impossible"));
+
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
     let names: Vec<_> = tools
@@ -271,6 +284,77 @@ fn stdio_server_exposes_four_tools_and_keeps_one_index_current() {
     assert_eq!(tools[1]["inputSchema"]["required"], json!(["target"]));
     assert_eq!(tools[2]["inputSchema"]["required"], json!(["target"]));
     assert_eq!(tools[3]["inputSchema"]["required"], json!(["from", "to"]));
+
+    let find = tools.iter().find(|tool| tool["name"] == "find").unwrap();
+    assert!(
+        find["description"]
+            .as_str()
+            .unwrap()
+            .contains("PRIMARY ENTRY POINT")
+    );
+    assert!(
+        find["description"]
+            .as_str()
+            .unwrap()
+            .contains("natural language")
+    );
+    assert!(
+        find["inputSchema"]["properties"]["query"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("where is session refresh handled")
+    );
+    assert_eq!(find["annotations"]["readOnlyHint"], false);
+    assert_eq!(find["annotations"]["destructiveHint"], false);
+    assert_eq!(find["annotations"]["idempotentHint"], true);
+    assert_eq!(find["annotations"]["openWorldHint"], false);
+    assert_eq!(find["annotations"]["title"], "Start code investigation");
+
+    let inspect = tools.iter().find(|tool| tool["name"] == "inspect").unwrap();
+    assert!(
+        inspect["description"]
+            .as_str()
+            .unwrap()
+            .contains("CURRENT source context")
+    );
+    assert!(
+        inspect["description"]
+            .as_str()
+            .unwrap()
+            .contains("already read")
+    );
+    let trace = tools.iter().find(|tool| tool["name"] == "trace").unwrap();
+    assert!(
+        trace["description"]
+            .as_str()
+            .unwrap()
+            .contains("BOTH endpoints")
+    );
+    let impact = tools.iter().find(|tool| tool["name"] == "impact").unwrap();
+    assert!(impact["description"].as_str().unwrap().contains("@diff"));
+    assert!(
+        impact["description"]
+            .as_str()
+            .unwrap()
+            .contains("completeness boundaries")
+    );
+    for tool in tools {
+        assert_eq!(tool["annotations"]["destructiveHint"], false);
+        assert_eq!(tool["annotations"]["openWorldHint"], false);
+    }
+
+    assert_eq!(
+        mcp.request("resources/list", json!({}))["result"]["resources"],
+        json!([])
+    );
+    assert_eq!(
+        mcp.request("resources/templates/list", json!({}))["result"]["resourceTemplates"],
+        json!([])
+    );
+    assert_eq!(
+        mcp.request("prompts/list", json!({}))["result"]["prompts"],
+        json!([])
+    );
 
     assert!(text(&mcp.call("find", json!({"query": "leaf"}))).contains("src/a.ts::leaf"));
     let discovery_response = mcp.call(

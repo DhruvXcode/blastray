@@ -1,3 +1,4 @@
+pub mod codex;
 pub mod diff;
 pub mod index;
 pub(crate) mod language;

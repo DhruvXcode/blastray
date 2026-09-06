@@ -38,6 +38,22 @@ types never become impact edges.
 
 `blastray mcp` is a stdio MCP server. Configure an MCP-capable client to launch it in the repository working directory. It exposes exactly `find`, `inspect`, `trace`, and `impact`; `impact` accepts `@diff` for working-tree impact.
 
+For an unfamiliar coding task, start with `find` using the task in ordinary
+language, then `inspect` a likely symbol before opening broad source files.
+Use `trace` only for a confirmed CALLS path between known endpoints, and use
+`impact` before shared structural edits (or `impact @diff` afterward). The MCP
+server carries this guidance itself. BlastRay never writes `AGENTS.md`,
+`CLAUDE.md`, hooks, skills, or other instructions into a repository.
+
+### Codex (optional, one time)
+
+If you use Codex, `blastray setup codex` registers the installed binary with
+Codex and installs one small user-scoped discovery skill at
+`~/.agents/skills/blastray/SKILL.md`. It is idempotent and leaves existing
+BlastRay registrations or a user-authored skill untouched. This is optional:
+normal BlastRay use still has zero per-repository setup, and no repository
+instruction files are generated.
+
 ## Supported languages
 
 JavaScript, TypeScript, Python, Rust, Go, and Java have conservative structural support. Dynamic, external-package, and compiler-dependent relationships remain unresolved rather than guessed. Java needs no JVM, JDK, Maven, Gradle, compiler, LSP, classpath, or package-manager execution. Go nested-module cross-package imports are not currently modeled.

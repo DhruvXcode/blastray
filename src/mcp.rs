@@ -69,30 +69,45 @@ impl Server {
 
 #[derive(Deserialize, JsonSchema)]
 struct FindInput {
+    /// Natural-language coding task, exact symbol, or canonical selector. For example:
+    /// "where is session refresh handled after browser reload?"
     query: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct InspectInput {
+    /// A relevant symbol from find, or a known canonical selector such as
+    /// src/auth/session.ts::refreshSession.
     target: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct TraceInput {
+    /// Known starting symbol for a confirmed CALLS-path question.
     from: String,
+    /// Known destination symbol for a confirmed CALLS-path question.
     to: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct ImpactInput {
+    /// Shared or structural symbol to assess before editing, or "@diff" after edits.
     target: String,
 }
 
-#[tool_router(server_handler)]
+#[tool_router]
 impl Server {
     #[tool(
         name = "find",
-        description = "Locate indexed code symbols with deterministic ranked lexical and structural matching. Use this to find a symbol before deeper inspection; it does not perform semantic or embedding search."
+        title = "Start code investigation",
+        description = "PRIMARY ENTRY POINT for an unfamiliar coding task, bug, feature, or question: before any broad repository grep, search, or file-read loop, call this with the natural language task in the user's own words. Example: \"where is session refresh handled after browser reload?\" Exact symbols and canonical selectors/path-like identities also work. Deterministic local retrieval: ranking suggests relevance, not graph proof.",
+        annotations(
+            title = "Start code investigation",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     fn find(&self, Parameters(FindInput { query }): Parameters<FindInput>) -> CallToolResult {
         self.answer(|index| Ok(query::find(index.graph(), &query)))
@@ -100,7 +115,15 @@ impl Server {
 
     #[tool(
         name = "inspect",
-        description = "Return one symbol's direct structural neighborhood: callers, callees, defining file/import context, and unresolved or ambiguous outgoing relationships. Use this before editing a symbol."
+        title = "Inspect symbol context",
+        description = "After find identifies a likely symbol, call this before opening broad source files; also use it when a relevant symbol is already known. Returns bounded CURRENT source context plus confirmed callers/callees, call-site evidence, import context, likely-test relevance when available, and local unresolved boundaries. Treat shown source as already read; open files only for deliberately omitted local details.",
+        annotations(
+            title = "Inspect symbol context",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     fn inspect(
         &self,
@@ -111,7 +134,15 @@ impl Server {
 
     #[tool(
         name = "trace",
-        description = "Find a confirmed directed structural CALLS path from one symbol to another. Unknown edges are never fabricated; no known path does not prove no runtime path exists."
+        title = "Trace confirmed calls",
+        description = "Use when BOTH endpoints are known and you need a confirmed directed CALLS path; it is not the vague-task discovery tool. A missing path means unknown from the proven graph, not proof that no runtime path exists.",
+        annotations(
+            title = "Trace confirmed calls",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     fn trace(&self, Parameters(TraceInput { from, to }): Parameters<TraceInput>) -> CallToolResult {
         self.answer(|index| query::trace(index.graph(), &from, &to))
@@ -119,7 +150,15 @@ impl Server {
 
     #[tool(
         name = "impact",
-        description = "Use impact on a symbol before a risky structural edit. Use target=\"@diff\" after edits to inspect the current Git working tree's confirmed blast radius. Ordinary targets return only proven reverse dependencies: CALLS plus supported source-proven inheritance and implementation contracts."
+        title = "Assess change impact",
+        description = "Use before changing a shared or structural symbol; use target=\"@diff\" after edits. Returns only proven reverse dependencies (CALLS plus supported EXTENDS/IMPLEMENTS contracts) and explicit completeness boundaries. An empty result is not universal proof of safety.",
+        annotations(
+            title = "Assess change impact",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     fn impact(
         &self,
@@ -132,6 +171,13 @@ impl Server {
         }
     }
 }
+
+#[rmcp::tool_handler(
+    router = Self::tool_router(),
+    name = "blastray",
+    instructions = "BlastRay is local repository analysis. For an unfamiliar coding task, bug, or feature, start with find using the user's natural-language task before broad grep/read. When find identifies a likely symbol, inspect it before opening broad source: its bounded current source context and confirmed relationships are already read. Use trace only when both endpoint symbols are known and a confirmed CALLS path is needed. Before a shared or structural edit use impact(symbol); after edits use impact(\"@diff\").\n\nFallback: use normal grep/read for exact literals, configs or docs, unsupported or empty BlastRay results, and source details inspect deliberately omitted. Find ranking suggests relevance; graph relationships are proven and conservative. Unresolved or unsupported does not mean impossible."
+)]
+impl rmcp::ServerHandler for Server {}
 
 fn text(value: String) -> CallToolResult {
     CallToolResult::success(vec![ContentBlock::text(value)])

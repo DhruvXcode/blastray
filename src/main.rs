@@ -14,6 +14,18 @@ fn main() -> ExitCode {
             }
         };
     }
+    if args.as_slice() == ["setup", "codex"] {
+        return match blastray::codex::setup() {
+            Ok(output) => {
+                println!("{output}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     match run(args) {
         Ok(output) => {
             println!("{output}");
@@ -63,5 +75,5 @@ fn answer_with_index(
 }
 
 fn help() -> String {
-    "BlastRay — code intelligence for coding agents\n\nUsage:\n  blastray find <query>\n  blastray inspect <target>\n  blastray trace <from> <to>\n  blastray impact <target>\n  blastray impact --diff\n  blastray mcp\n\nTargets accept a canonical symbol identity such as src/auth/session.ts::refreshSession.".to_string()
+    "BlastRay — code intelligence for coding agents\n\nUsage:\n  blastray find <query>\n  blastray inspect <target>\n  blastray trace <from> <to>\n  blastray impact <target>\n  blastray impact --diff\n  blastray mcp\n  blastray setup codex\n\nTargets accept a canonical symbol identity such as src/auth/session.ts::refreshSession.".to_string()
 }
