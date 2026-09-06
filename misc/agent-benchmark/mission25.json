@@ -1,0 +1,63 @@
+{
+  "mission": "25",
+  "product_commit": "2358b44ce2de6fa3ae184c18ee3b4e2b51e26e2f",
+  "agent": {
+    "cli": "codex-cli 0.153.4",
+    "model": "gpt-5.6-terra",
+    "reasoning_effort": "high"
+  },
+  "protocol": "One fresh, read-only, no-network, no-test, no-git-history Codex run per repository and condition. BARE has normal shell tools only; BLASTRAY adds exactly the current user skill and four-tool stdio MCP registration. No product changes or repeats occurred.",
+  "tasks": [
+    {
+      "id": "chi-routing",
+      "repository": "https://github.com/go-chi/chi",
+      "commit": "ae6be7469132cf471ca099d8c7bda4010c4ff7b2",
+      "language": "Go",
+      "prompt": "Without modifying files, running tests, inspecting git history, or using network access, explain how an incoming HTTP request is matched to a route and reaches its handler in this repository. Identify the main control path, middleware behavior, and the surrounding code most risky to change. Stop once you have enough evidence to answer.",
+      "facts": [
+        "Mux.ServeHTTP establishes/reuses the pooled routing Context and executes the computed handler.",
+        "The first route builds the global middleware-to-routeHTTP chain; Use must precede routes, while inline middleware wraps endpoint handlers.",
+        "routeHTTP delegates method/path matching to tree.FindRoute, writes path values/pattern, and selects 404 versus 405.",
+        "Registration/tree traversal plus mounting/context reset are compatibility-sensitive change surfaces."
+      ],
+      "runs": {
+        "bare": {"quality": "4/4", "major_actions": 6, "search_actions": 2, "source_read_actions": 6, "mcp_calls": 0, "actions_to_location_including": 3, "elapsed_ms": 62525, "input_tokens": 152199},
+        "blastray": {"quality": "4/4", "major_actions": 17, "search_actions": 3, "source_read_actions": 4, "mcp_calls": 11, "actions_to_location_including": 3, "elapsed_ms": 119803, "input_tokens": 301543, "skill_loaded": true, "find_before_broad_rummaging": true, "operations": ["find", "inspect x10"], "lesson": "The broad 20-of-395 find exposed Mount before the primary dispatch path; ten inspections and later source rereads outweighed the structural help."}
+      }
+    },
+    {
+      "id": "pyjwt-decode",
+      "repository": "https://github.com/jpadilla/pyjwt",
+      "commit": "7144e4534c34810f4525dc4578a32addd8212cff",
+      "language": "Python",
+      "prompt": "Without modifying files, running tests, inspecting git history, or using network access, explain how a JWT decode request moves from the public API through signature verification and claim validation in this repository. Identify the main control path, important dependencies, and code risky to change. Stop once you have enough evidence to answer.",
+      "facts": [
+        "Public jwt.decode delegates through PyJWT.decode/decode_complete to the shared PyJWS decoder.",
+        "PyJWS parses the compact JWS and verifies with an algorithm allow-list/key preparation before payload use.",
+        "Payload JSON decoding is followed by required, time, audience, issuer, subject, and jti claim checks under merged options/leeway.",
+        "Option propagation, protected-header/signature handling, and algorithm/key checks are security-sensitive surfaces."
+      ],
+      "runs": {
+        "bare": {"quality": "4/4", "major_actions": 7, "search_actions": 2, "source_read_actions": 7, "mcp_calls": 0, "actions_to_location_including": 3, "elapsed_ms": 78334, "input_tokens": 214964},
+        "blastray": {"quality": "4/4", "major_actions": 12, "search_actions": 2, "source_read_actions": 5, "mcp_calls": 7, "actions_to_location_including": 2, "elapsed_ms": 97249, "input_tokens": 234355, "skill_loaded": true, "find_before_broad_rummaging": true, "operations": ["find", "inspect x6"], "lesson": "The correct distributed path was found immediately, but the agent opened every stage and then reread source for dependency and security detail."}
+      }
+    },
+    {
+      "id": "node-fetch-flow",
+      "repository": "https://github.com/node-fetch/node-fetch",
+      "commit": "8b3320d2a7c07bce4afc6b2bf6c3bbddda85b01f",
+      "language": "JavaScript",
+      "prompt": "Without modifying files, running tests, inspecting git history, or using network access, explain how the public fetch API sends a request and processes redirects and compressed responses in this repository. Identify the main control path, important dependencies, and code risky to change. Stop once you have enough evidence to answer.",
+      "facts": [
+        "Public fetch constructs Request, derives Node request options, chooses http/https, and streams its body.",
+        "Redirect processing handles modes, Location/counter, headers, method/body rewriting, and recursive Request construction.",
+        "Compressed responses conditionally use zlib gzip/deflate/brotli streams before Response construction.",
+        "Redirect/replay, abort/stream lifecycle, and decompression branches are risky change surfaces."
+      ],
+      "runs": {
+        "bare": {"quality": "4/4", "major_actions": 7, "search_actions": 4, "source_read_actions": 5, "mcp_calls": 0, "actions_to_location_including": 3, "elapsed_ms": 69329, "input_tokens": 171182},
+        "blastray": {"quality": "4/4", "major_actions": 6, "search_actions": 2, "source_read_actions": 4, "mcp_calls": 2, "actions_to_location_including": 2, "elapsed_ms": 64127, "input_tokens": 168926, "skill_loaded": true, "find_before_broad_rummaging": true, "operations": ["find", "inspect"], "lesson": "A decisive top result plus one full-function inspection replaced the initial broad searches and preserved the complete answer."}
+      }
+    }
+  ]
+}

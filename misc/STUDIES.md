@@ -129,3 +129,6 @@
 
 ## Mission 24 action-economy lesson
 - A discovery instruction must name both the first action and the stopping boundary: treating find, inspect, trace, and impact as equal steps causes synonym searches and unnecessary verification even when the graph has already located the implementation.
+
+## Mission 25 utility lesson
+- A structural result earns its transport overhead only when it displaces the follow-up work it invites: one decisive `find` plus one inspect helped node-fetch, while distributed paths triggered serial inspections and source rereads that made equal-quality answers more expensive.

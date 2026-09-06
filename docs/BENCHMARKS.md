@@ -117,6 +117,77 @@ a general efficiency claim. Four new completed agent runs were used (two Cobra
 development probes and two holdouts); an earlier sandbox-blocked CLI attempt
 never reached the model and is not counted.
 
+## Mission 25 bare-versus-BlastRay utility gate — FAIL
+
+This is a frozen product measurement, not a product change. Every BlastRay
+condition used `2358b44ce2de6fa3ae184c18ee3b4e2b51e26e2f`, built before the
+runs, with its single user-scoped Codex skill and its four stdio MCP tools.
+Each BARE condition had the same normal shell/read tools but neither the skill
+nor an MCP registration. All six contexts used codex-cli 0.153.4,
+`gpt-5.6-terra`, and high reasoning. A fresh copy of the same shallow public
+repository snapshot and a fresh Codex home were used for each paired run.
+
+The prompts were frozen before either condition ran. Each prohibited edits,
+tests, git-history inspection, and network use, and told the agent to stop
+when it had enough evidence. They did not name BlastRay, MCP, code
+intelligence, target files, or target symbols.
+
+| repository (commit) | ecosystem | exact investigation prompt | frozen answer facts |
+| --- | --- | --- | --- |
+| [go-chi/chi](https://github.com/go-chi/chi) `ae6be7469132cf471ca099d8c7bda4010c4ff7b2` | Go | “Without modifying files, running tests, inspecting git history, or using network access, explain how an incoming HTTP request is matched to a route and reaches its handler in this repository. Identify the main control path, middleware behavior, and the surrounding code most risky to change. Stop once you have enough evidence to answer.” | `ServeHTTP` and pooled context; global versus inline middleware chain; `routeHTTP`/`FindRoute` plus 404/405; registration/tree/mount/context change risks. |
+| [jpadilla/pyjwt](https://github.com/jpadilla/pyjwt) `7144e4534c34810f4525dc4578a32addd8212cff` | Python | “Without modifying files, running tests, inspecting git history, or using network access, explain how a JWT decode request moves from the public API through signature verification and claim validation in this repository. Identify the main control path, important dependencies, and code risky to change. Stop once you have enough evidence to answer.” | public `decode` through `PyJWT`/`PyJWS`; compact-token parsing and allow-listed signature verification; JSON payload then required/time/audience/issuer/subject/jti validation; options and algorithm/key/header security boundaries. |
+| [node-fetch/node-fetch](https://github.com/node-fetch/node-fetch) `8b3320d2a7c07bce4afc6b2bf6c3bbddda85b01f` | JavaScript | “Without modifying files, running tests, inspecting git history, or using network access, explain how the public fetch API sends a request and processes redirects and compressed responses in this repository. Identify the main control path, important dependencies, and code risky to change. Stop once you have enough evidence to answer.” | `fetch`/`Request`/Node transport/body streaming; redirect modes, headers, counter, method/body replay; gzip/deflate/brotli response streams; redirect/abort/stream/decompression risks. |
+
+The answer key was derived from the frozen sources before any agent run. Both
+answers on every task identified all four required facts; no unsupported
+structural claim changed a score. The compact machine-readable record,
+including the pre-run facts and raw metrics, is
+[`misc/agent-benchmark/mission25.json`](../misc/agent-benchmark/mission25.json).
+
+| task | answer quality (bare / BlastRay) | bare: major / search / source-read / MCP | BlastRay: major / search / source-read / MCP | actions to first useful implementation, inclusive (bare / BlastRay) | elapsed (bare / BlastRay) | reported input tokens (bare / BlastRay) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| chi routing | 4/4 / 4/4 | 6 / 2 / 6 / 0 | 17 / 3 / 4 / 11 | 3 / 3 | 62.5 s / 119.8 s | 152,199 / 301,543 |
+| PyJWT decode | 4/4 / 4/4 | 7 / 2 / 7 / 0 | 12 / 2 / 5 / 7 | 3 / 2 | 78.3 s / 97.2 s | 214,964 / 234,355 |
+| node-fetch flow | 4/4 / 4/4 | 7 / 4 / 5 / 0 | 6 / 2 / 4 / 2 | 3 / 2 | 69.3 s / 64.1 s | 171,182 / 168,926 |
+| total | 12/12 / 12/12 | 20 / 8 / 18 / 0 | 35 / 7 / 13 / 20 | 9 / 7 | 210.2 s / 281.2 s | 538,345 / 535,898 |
+
+Search/read counts classify completed shell actions and overlap with major
+actions; skill loading is included in the BlastRay totals. The input figures
+are CLI-reported context usage, including cached context, and are not a cost
+estimate. Initial MCP registration happened before the fresh agent context and
+is not an agent action; no agent-produced command used the network, edited a
+file, ran a test, or inspected git history.
+
+Natural skill selection was 3/3. Every BlastRay run made one `find` before a
+broad repository listing/search (3/3); its only preceding shell action was the
+host's skill read (and, in chi, a narrow executable check). This improved
+location timing by two actions in aggregate (7 versus 9) but did not offset
+the subsequent MCP work.
+
+| BlastRay task | MCP sequence and likely displacement | work created or still required |
+| --- | --- | --- |
+| chi | `find`, then ten `inspect` calls. The find identified the router area; `ServeHTTP`, `routeHTTP`, `handle`, `Use`, `Reset`, `InsertRoute`, and `chain` supplied useful local facts. | The 20-of-395 result surfaced `Mount` before the dispatch path. `Chain` and `Middlewares.Handler` were redundant, and the agent reopened source for almost all inspected material plus tree traversal. No net shell work was eliminated: 17 total actions versus 6 bare. |
+| PyJWT | `find`, then six inspections of `decode_complete`, `decode`, claim validation, JWS decode, signature verification, and payload decoding. The find displaced the bare run's two initial scans and the packets correctly exposed the distributed control path. | The task genuinely spans several methods, but the agent inspected every stage and then reread source for dependencies and security detail. The packets did not establish a stopping boundary: 12 total actions versus 7 bare. |
+| node-fetch | `find`, `inspect(fetch)`. The decisive top result and bounded full-function packet displaced two broad searches and one source-read action while preserving all facts. | The agent still opened supporting Request/Body helpers, but this was the only net win: 6 total actions versus 7 bare. |
+
+The result fails the utility gate. Quality was equal, and broad search/read work
+fell (8 to 7 searches; 18 to 13 source reads), but BlastRay reduced total work
+on only one of three tasks and materially increased it on the other two
+without answer-quality gain (20 to 35 major actions, 210.2 to 281.2 seconds,
+and 0 to 20 MCP calls). The nearly equal reported input total is not enough to
+overrule the much larger interaction and elapsed-time cost.
+
+The dominant weakness is stopping/tool-call overhead for a distributed
+structural question, made worse in chi by non-decisive generic-query ranking.
+The current skill correctly routes to one early `find`, but agents treat a
+multi-stage answer as a reason to inspect each related symbol and then reread
+source. The smallest corrective follow-up is a response-level investigation:
+on frozen investigation traces, establish whether a more decisive primary
+result and an inspect packet that exposes the next confirmed structural edge
+can answer these multi-method questions without serial inspections. It should
+not add a tool, provider semantics, or another agent integration. No Mission
+26 host-integration work is justified by this failure.
+
 ## Mission 1 baseline
 
 Measured before the Mission 2 change at commit `0178b5e`, in release mode:
