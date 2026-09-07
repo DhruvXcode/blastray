@@ -23,6 +23,7 @@ struct Provider {
     supports_path: fn(&Path) -> bool,
     parse: fn(&str, &str) -> Result<ParsedFile, String>,
     resolve: ResolveProvider,
+    resolution_scope: ResolutionScopeProvider,
     is_context_path: fn(&Path) -> bool,
     extensions: &'static [&'static str],
 }
@@ -32,6 +33,8 @@ type ResolveProvider = fn(
     &BTreeSet<String>,
     &ProviderContext,
 ) -> BTreeMap<String, ResolvedFile>;
+
+type ResolutionScopeProvider = fn(&BTreeMap<String, ParsedFile>, &str) -> BTreeSet<String>;
 
 #[derive(Clone, Default)]
 pub(crate) struct ProviderContext {
@@ -43,6 +46,7 @@ const PROVIDERS: [Provider; 5] = [
         supports_path: js_ts::supports_path,
         parse: js_ts::parse,
         resolve: js_ts::resolve,
+        resolution_scope: same_file_resolution_scope,
         is_context_path: no_context_path,
         extensions: js_ts::EXTENSIONS,
     },
@@ -50,6 +54,7 @@ const PROVIDERS: [Provider; 5] = [
         supports_path: python::supports_path,
         parse: python::parse,
         resolve: python::resolve,
+        resolution_scope: same_file_resolution_scope,
         is_context_path: no_context_path,
         extensions: python::EXTENSIONS,
     },
@@ -57,6 +62,7 @@ const PROVIDERS: [Provider; 5] = [
         supports_path: rust::supports_path,
         parse: rust::parse,
         resolve: rust::resolve,
+        resolution_scope: same_file_resolution_scope,
         is_context_path: no_context_path,
         extensions: rust::EXTENSIONS,
     },
@@ -64,6 +70,7 @@ const PROVIDERS: [Provider; 5] = [
         supports_path: go::supports_path,
         parse: go::parse,
         resolve: go::resolve,
+        resolution_scope: go::resolution_scope,
         is_context_path: go::is_context_path,
         extensions: go::EXTENSIONS,
     },
@@ -71,6 +78,7 @@ const PROVIDERS: [Provider; 5] = [
         supports_path: java::supports_path,
         parse: java::parse,
         resolve: java::resolve,
+        resolution_scope: same_file_resolution_scope,
         is_context_path: no_context_path,
         extensions: java::EXTENSIONS,
     },
@@ -78,6 +86,10 @@ const PROVIDERS: [Provider; 5] = [
 
 fn no_context_path(_: &Path) -> bool {
     false
+}
+
+fn same_file_resolution_scope(_: &BTreeMap<String, ParsedFile>, path: &str) -> BTreeSet<String> {
+    BTreeSet::from([path.to_owned()])
 }
 
 #[derive(Clone)]
@@ -248,6 +260,15 @@ pub(crate) fn resolve_files(
         resolved.extend((provider.resolve)(parsed, paths, context));
     }
     resolved
+}
+
+pub(crate) fn resolution_scope(
+    parsed: &BTreeMap<String, ParsedFile>,
+    path: &str,
+) -> BTreeSet<String> {
+    provider_for_path(Path::new(path))
+        .map(|provider| (provider.resolution_scope)(parsed, path))
+        .unwrap_or_else(|| BTreeSet::from([path.to_owned()]))
 }
 
 pub(crate) fn supported_extensions() -> Vec<&'static str> {

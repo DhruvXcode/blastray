@@ -30,6 +30,7 @@ pub(crate) struct SymbolDraft {
     pub kind: SymbolKind,
     calls: Vec<CallDraft>,
     shadowed: BTreeSet<String>,
+    receiver_types: BTreeMap<String, String>,
     owner: Option<String>,
     receiver: Option<String>,
 }
@@ -53,7 +54,7 @@ struct CallDraft {
 enum CallKind {
     Direct,
     Receiver,
-    Package,
+    ChainedReceiver,
     Other,
 }
 
@@ -124,6 +125,7 @@ fn add_types(parsed: &mut ParsedFile, node: Node<'_>, source: &str) {
             kind: SymbolKind::Type,
             calls: vec![],
             shadowed: BTreeSet::new(),
+            receiver_types: BTreeMap::new(),
             owner: None,
             receiver: None,
         });
@@ -146,14 +148,20 @@ fn add_function(
         .map(|o| format!("{}::{o}.{name}", parsed.path))
         .unwrap_or_else(|| format!("{}::{name}", parsed.path));
     let mut shadowed = BTreeSet::new();
+    let mut receiver_types = BTreeMap::new();
     if let Some(params) = node.child_by_field_name("parameters") {
         bindings(params, source, &mut shadowed);
+        receiver_types.extend(declared_types(params, source));
     }
     if let Some(receiver) = &receiver {
         shadowed.insert(receiver.clone());
+        if let Some(owner) = &owner {
+            receiver_types.insert(receiver.clone(), owner.clone());
+        }
     }
     let mut calls = Vec::new();
     if let Some(body) = node.child_by_field_name("body") {
+        receiver_types.extend(direct_local_types(body, source));
         collect_calls(body, source, &mut shadowed, &mut calls);
     }
     parsed.symbols.push(SymbolDraft {
@@ -170,6 +178,7 @@ fn add_function(
         },
         calls,
         shadowed,
+        receiver_types,
         owner,
         receiver,
     });
@@ -212,6 +221,92 @@ fn bindings(node: Node<'_>, source: &str, into: &mut BTreeSet<String>) {
     collect_identifiers(node, source, &mut ids);
     into.extend(ids);
 }
+
+/// Extract parameter bindings whose type is written directly in the signature.
+/// This intentionally does not follow assignments, constructors, factories,
+/// interfaces, or control flow.
+fn declared_types(node: Node<'_>, source: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if current.kind() == "parameter_declaration" {
+            add_declared_type(current, source, &mut out);
+            continue;
+        }
+        let mut cursor = current.walk();
+        stack.extend(current.named_children(&mut cursor));
+    }
+    out
+}
+
+/// A function body's direct `var` declarations share its lexical scope. Do
+/// not walk nested blocks: lifting a shadow from a child scope would turn a
+/// later interface call into an invented concrete call.
+fn direct_local_types(body: Node<'_>, source: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let scope = if body.kind() == "block" {
+        let mut body_cursor = body.walk();
+        body.named_children(&mut body_cursor)
+            .find(|child| child.kind() == "statement_list")
+            .unwrap_or(body)
+    } else {
+        body
+    };
+    let mut cursor = scope.walk();
+    for statement in scope.named_children(&mut cursor) {
+        let declarations: Vec<_> = if statement.kind() == "var_declaration" {
+            vec![statement]
+        } else if statement.kind() == "declaration_statement" {
+            let mut declaration_cursor = statement.walk();
+            statement.named_children(&mut declaration_cursor).collect()
+        } else {
+            Vec::new()
+        };
+        for declaration in declarations {
+            if declaration.kind() != "var_declaration" {
+                continue;
+            }
+            let mut var_cursor = declaration.walk();
+            for child in declaration.named_children(&mut var_cursor) {
+                if child.kind() == "var_spec" {
+                    add_declared_type(child, source, &mut out);
+                } else if child.kind() == "var_spec_list" {
+                    let mut spec_cursor = child.walk();
+                    for spec in child.named_children(&mut spec_cursor) {
+                        if spec.kind() == "var_spec" {
+                            add_declared_type(spec, source, &mut out);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn add_declared_type(node: Node<'_>, source: &str, out: &mut BTreeMap<String, String>) {
+    let Some(type_node) = node.child_by_field_name("type") else {
+        return;
+    };
+    let type_name = text(type_node, source)
+        .trim()
+        .trim_start_matches('*')
+        .trim();
+    if type_name.is_empty()
+        || !type_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+    {
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "identifier" && child.id() != type_node.id() {
+            out.insert(text(child, source).to_owned(), type_name.to_owned());
+        }
+    }
+}
+
 fn collect_identifiers(node: Node<'_>, source: &str, into: &mut Vec<String>) {
     if matches!(node.kind(), "identifier" | "type_identifier") {
         into.push(text(node, source).to_owned());
@@ -249,10 +344,13 @@ fn collect_calls(
                         if a.kind() == "identifier" && b.kind() == "field_identifier" =>
                     {
                         (
-                            CallKind::Package,
+                            CallKind::Receiver,
                             text(a, source).to_owned(),
                             Some(text(b, source).to_owned()),
                         )
+                    }
+                    (Some(_), Some(b)) if b.kind() == "field_identifier" => {
+                        (CallKind::ChainedReceiver, text(b, source).to_owned(), None)
                     }
                     _ => (CallKind::Other, String::new(), None),
                 }
@@ -311,6 +409,25 @@ pub(crate) fn resolve(
         .collect()
 }
 
+pub(crate) fn resolution_scope(
+    parsed: &BTreeMap<String, ProviderParsedFile>,
+    path: &str,
+) -> BTreeSet<String> {
+    let Some(ProviderParsedFile::Go(changed)) = parsed.get(path) else {
+        return BTreeSet::from([path.to_owned()]);
+    };
+    let key = package_key(changed);
+    parsed
+        .iter()
+        .filter_map(|(candidate_path, file)| match file {
+            ProviderParsedFile::Go(candidate) if package_key(candidate) == key => {
+                Some(candidate_path.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn resolve_file(
     file: &ParsedFile,
     files: &[&ParsedFile],
@@ -351,17 +468,15 @@ fn resolve_file(
                 CallKind::Direct if !symbol.shadowed.contains(&call.name) => add_unique(
                     &mut calls,
                     &mut issues,
-                    file,
                     &symbol.canonical,
                     call,
                     local_functions.get(&call.name).cloned(),
                 ),
-                CallKind::Package => {
+                CallKind::Receiver => {
                     if call.name == symbol.receiver.clone().unwrap_or_default() {
                         add_unique(
                             &mut calls,
                             &mut issues,
-                            file,
                             &symbol.canonical,
                             call,
                             methods
@@ -370,6 +485,20 @@ fn resolve_file(
                                     call.member.clone().unwrap_or_default(),
                                 ))
                                 .cloned(),
+                        );
+                    } else if let Some(owner) = symbol.receiver_types.get(&call.name) {
+                        add_unique(
+                            &mut calls,
+                            &mut issues,
+                            &symbol.canonical,
+                            call,
+                            receiver_method_candidates(
+                                files,
+                                &methods,
+                                &imports,
+                                owner,
+                                call.member.as_deref().unwrap_or_default(),
+                            ),
                         );
                     } else if let Some(target) = imports.get(&call.name) {
                         let candidate = functions_in(files, target)
@@ -380,32 +509,34 @@ fn resolve_file(
                                     exported(name.rsplit("::").next().unwrap_or_default())
                                 })
                             });
-                        add_unique(
-                            &mut calls,
-                            &mut issues,
-                            file,
-                            &symbol.canonical,
-                            call,
-                            candidate,
-                        );
+                        add_unique(&mut calls, &mut issues, &symbol.canonical, call, candidate);
                     } else {
-                        issues.push(issue(
-                            file,
+                        issues.push(call_issue(
+                            RelationshipStatus::Unresolved,
+                            &symbol.canonical,
                             call.line,
                             call.column,
                             &call.name,
-                            "unresolved Go receiver/package call",
+                            "unresolved Go receiver dispatch; receiver type is not locally proven",
                         ));
                     }
                 }
-                CallKind::Direct | CallKind::Other => issues.push(issue(
-                    file,
+                CallKind::ChainedReceiver => issues.push(call_issue(
+                    RelationshipStatus::Unresolved,
+                    &symbol.canonical,
+                    call.line,
+                    call.column,
+                    &call.name,
+                    "unresolved Go chained receiver dispatch; value flow is not modeled",
+                )),
+                CallKind::Direct | CallKind::Other => issues.push(call_issue(
+                    RelationshipStatus::Unresolved,
+                    &symbol.canonical,
                     call.line,
                     call.column,
                     &call.name,
                     "unresolved Go call",
                 )),
-                _ => {}
             }
         }
     }
@@ -421,7 +552,6 @@ fn resolve_file(
 fn add_unique(
     calls: &mut Vec<ResolvedCall>,
     issues: &mut Vec<RelationshipIssue>,
-    file: &ParsedFile,
     from: &str,
     call: &CallDraft,
     candidates: Option<Vec<String>>,
@@ -433,15 +563,17 @@ fn add_unique(
             line: call.line,
             column: call.column,
         }),
-        Some(v) if v.len() > 1 => issues.push(issue(
-            file,
+        Some(v) if v.len() > 1 => issues.push(call_issue(
+            RelationshipStatus::Ambiguous,
+            from,
             call.line,
             call.column,
             &call.name,
             "ambiguous Go call target",
         )),
-        _ => issues.push(issue(
-            file,
+        _ => issues.push(call_issue(
+            RelationshipStatus::Unresolved,
+            from,
             call.line,
             call.column,
             &call.name,
@@ -482,6 +614,25 @@ fn methods_in(
         }
     }
     out
+}
+
+fn receiver_method_candidates(
+    files: &[&ParsedFile],
+    local_methods: &BTreeMap<(String, String), Vec<String>>,
+    imports: &BTreeMap<String, (String, String)>,
+    receiver_type: &str,
+    member: &str,
+) -> Option<Vec<String>> {
+    if let Some((alias, owner)) = receiver_type.split_once('.') {
+        let target = imports.get(alias)?;
+        let imported_methods = methods_in(files, target);
+        return imported_methods
+            .get(&(owner.to_owned(), member.to_owned()))
+            .cloned();
+    }
+    local_methods
+        .get(&(receiver_type.to_owned(), member.to_owned()))
+        .cloned()
 }
 fn package_files(files: &[&ParsedFile]) -> BTreeMap<(String, String), Vec<String>> {
     let mut out = BTreeMap::new();
@@ -577,9 +728,45 @@ fn issue(
     name: &str,
     detail: &str,
 ) -> RelationshipIssue {
+    issue_with_status(
+        RelationshipStatus::Unresolved,
+        file,
+        line,
+        column,
+        name,
+        detail,
+    )
+}
+
+fn issue_with_status(
+    status: RelationshipStatus,
+    file: &ParsedFile,
+    line: usize,
+    column: usize,
+    name: &str,
+    detail: &str,
+) -> RelationshipIssue {
     RelationshipIssue {
-        status: RelationshipStatus::Unresolved,
+        status,
         source: file.path.clone(),
+        line,
+        column,
+        name: name.to_owned(),
+        detail: detail.to_owned(),
+    }
+}
+
+fn call_issue(
+    status: RelationshipStatus,
+    source: &str,
+    line: usize,
+    column: usize,
+    name: &str,
+    detail: &str,
+) -> RelationshipIssue {
+    RelationshipIssue {
+        status,
+        source: source.to_owned(),
         line,
         column,
         name: name.to_owned(),
@@ -691,6 +878,112 @@ mod tests {
         );
         assert!(facts["main.go"].calls.is_empty());
         assert!(facts["main.go"].issues.len() >= 2);
+    }
+
+    #[test]
+    fn resolves_explicit_concrete_parameter_pointer_and_local_receivers() {
+        let facts = resolved(
+            &[(
+                "main.go",
+                "package main\ntype Worker struct{}\nfunc (worker Worker) Run() {}\nfunc parameter(w Worker) { w.Run() }\nfunc pointer(w *Worker) { w.Run() }\nfunc local() { var w Worker; w.Run() }\n",
+            )],
+            &[],
+        );
+        let calls = &facts["main.go"].calls;
+        for source in ["parameter", "pointer", "local"] {
+            assert!(calls.iter().any(|call| {
+                call.from == format!("main.go::{source}") && call.to == "main.go::Worker.Run"
+            }));
+        }
+    }
+
+    #[test]
+    fn resolves_cross_file_and_imported_concrete_receivers() {
+        let facts = resolved(
+            &[
+                (
+                    "main.go",
+                    "package main\nimport worker \"example.com/project/internal/worker\"\nfunc entry(w worker.Worker) { w.Run() }\n",
+                ),
+                (
+                    "internal/worker/worker.go",
+                    "package worker\ntype Worker struct{}\nfunc (worker *Worker) Run() {}\n",
+                ),
+            ],
+            &[("go.mod", "module example.com/project\n")],
+        );
+        assert!(facts["main.go"].calls.iter().any(|call| {
+            call.from == "main.go::entry" && call.to == "internal/worker/worker.go::Worker.Run"
+        }));
+    }
+
+    #[test]
+    fn multiple_locally_indexed_methods_are_ambiguous() {
+        let facts = resolved(
+            &[
+                (
+                    "a.go",
+                    "package main\ntype Worker struct{}\nfunc (worker Worker) Run() {}\n",
+                ),
+                (
+                    "b.go",
+                    "package main\nfunc (worker Worker) Run() {}\nfunc entry(worker Worker) { worker.Run() }\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(facts["b.go"].calls.is_empty());
+        assert!(
+            facts["b.go"]
+                .issues
+                .iter()
+                .any(|issue| issue.status == RelationshipStatus::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn interface_and_dynamic_receivers_remain_unresolved() {
+        let facts = resolved(
+            &[(
+                "main.go",
+                "package main\ntype Runner interface { Run() }\ntype First struct{}\ntype Second struct{}\nfunc (first First) Run() {}\nfunc (second Second) Run() {}\nfunc interfaceCall(r Runner) { r.Run() }\nfunc unknown(x any) { x.(Runner).Run() }\n",
+            )],
+            &[],
+        );
+        assert!(facts["main.go"].calls.is_empty());
+        assert!(facts["main.go"].issues.len() >= 2);
+    }
+
+    #[test]
+    fn nested_concrete_shadow_does_not_type_an_interface_parameter() {
+        let facts = resolved(
+            &[(
+                "main.go",
+                "package main\ntype Runner interface { Run() }\ntype Worker struct{}\nfunc (worker Worker) Run() {}\nfunc entry(value Runner) { { var value Worker; value.Run() }; value.Run() }\n",
+            )],
+            &[],
+        );
+        assert!(facts["main.go"].calls.is_empty());
+        assert!(facts["main.go"].issues.len() >= 2);
+    }
+
+    #[test]
+    fn dynamic_chained_and_callable_members_do_not_become_edges() {
+        let facts = resolved(
+            &[(
+                "main.go",
+                "package main\nimport \"net/http\"\ntype Runner interface { Run() }\ntype Container struct { callback func(); child Runner }\ntype First struct{}\ntype Second struct{}\ntype Outer struct { First; Second }\nfunc (first First) Run() {}\nfunc (second Second) Run() {}\nfunc interfaceCall(r Runner) { r.Run() }\nfunc external(handler http.Handler) { handler.ServeHTTP(nil, nil) }\nfunc chained(value Container) { value.child.Run() }\nfunc callback(value Container) { value.callback() }\nfunc promoted(value Outer) { value.Run() }\nfunc factory() Runner { return nil }\nfunc dynamic() { factory().Run() }\n",
+            )],
+            &[],
+        );
+        assert!(facts["main.go"].calls.is_empty());
+        assert!(facts["main.go"].issues.len() >= 6);
+        assert!(
+            facts["main.go"]
+                .issues
+                .iter()
+                .all(|issue| issue.status == RelationshipStatus::Unresolved)
+        );
     }
 
     #[test]

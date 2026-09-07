@@ -149,6 +149,52 @@ fn receiver_calls_remain_unresolved() {
 }
 
 #[test]
+fn go_concrete_receiver_calls_are_proven_and_interface_calls_stay_boundaries() {
+    let repository = std::env::temp_dir().join(format!(
+        "blastray-go-receiver-test-{}-{}",
+        std::process::id(),
+        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    fs::write(
+        repository.join("main.go"),
+        "package main\ntype Runner interface { Run() }\ntype Worker struct{}\nfunc (worker Worker) Run() {}\nfunc entry(worker Worker) { worker.Run() }\nfunc boundary(runner Runner) { runner.Run() }\n",
+    )
+    .unwrap();
+
+    let inspect = run_in(&repository, &["inspect", "main.go::entry"]);
+    assert!(inspect.status.success());
+    let inspect = String::from_utf8(inspect.stdout).unwrap();
+    assert!(inspect.contains("main.go::Worker.Run"), "{inspect}");
+
+    let trace = run_in(
+        &repository,
+        &["trace", "main.go::entry", "main.go::Worker.Run"],
+    );
+    assert!(trace.status.success());
+    assert!(
+        String::from_utf8(trace.stdout)
+            .unwrap()
+            .contains("Known CALLS path")
+    );
+
+    let impact = run_in(&repository, &["impact", "main.go::Worker.Run"]);
+    assert!(impact.status.success());
+    assert!(
+        String::from_utf8(impact.stdout)
+            .unwrap()
+            .contains("main.go::entry")
+    );
+
+    let boundary = run_in(&repository, &["inspect", "main.go::boundary"]);
+    assert!(boundary.status.success());
+    let boundary = String::from_utf8(boundary.stdout).unwrap();
+    assert!(boundary.contains("UNRESOLVED"), "{boundary}");
+    assert!(boundary.contains("unresolved Go call target"), "{boundary}");
+    fs::remove_dir_all(repository).unwrap();
+}
+
+#[test]
 fn class_methods_are_symbols_and_can_call_top_level_functions() {
     let output = stdout(&["inspect", "src/local.ts::Worker.run"]);
     assert!(output.contains("[method src/local.ts"));

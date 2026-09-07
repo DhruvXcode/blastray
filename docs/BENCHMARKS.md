@@ -1109,6 +1109,69 @@ chi is deliberately a limited-confidence B result. Its relevant router area
 is discoverable, but dynamic receiver/interface composition is not promoted to
 a fabricated CALLS path merely to force a single runtime root.
 
+## Mission 31 Go receiver/member census
+
+The source-only census used chi (`ae6be74`), Cobra (`adbc881`), and zap
+(`bb1a55d`) at the pinned shallow snapshots. It examined simple selector calls
+and source-checked newly materialized edges. The pre-change baseline was
+Mission 30 (`3e23871`). A selector is not assumed to be a receiver: an import
+alias is still resolved as a package selector, and chains remain separate.
+
+| shape / evidence class | chi | Cobra | zap | selected result |
+| --- | ---: | ---: | ---: | --- |
+| selector-looking calls in source | 2,973 | 2,776 | 4,318 | census surface only |
+| syntactically chained selectors | 140 | 48 | 280 | unresolved: no chain/value flow |
+| unresolved direct receiver/package boundaries before | 1,387 | 1,712 | 1,535 | starting surface |
+| newly proven concrete bindings | 6 | 38 | 13 | `CALLS` only with one indexed owner/method |
+| remaining direct receiver-type-unproven boundaries | 981 | 978 | 1,118 | unresolved, not guessed |
+
+The high-value, syntax-proven slice was a declared concrete receiver,
+explicitly typed parameter, direct function-scope typed local, and an exact
+repository-local imported concrete type; pointer spelling shares the same
+owner lookup. It is common in all three repositories and requires no flow
+through assignments or calls. Struct fields, promoted methods, interface
+dispatch, chained receivers, callable members, external types, factories, and
+shadow-sensitive nested locals were deliberately excluded.
+
+The durable provider corpus asserts exact `CALLS` targets for concrete local,
+pointer local, parameter, cross-file same-package, and repository-local import
+cases. Negative controls cover an interface with multiple implementers,
+external interface, chained receiver, callable member, promoted-method
+ambiguity, dynamic factory result, and nested shadow; they assert no fabricated
+edge and an `UNRESOLVED` boundary. The CLI corpus further proves that `inspect`
+shows a new edge and that generic `trace` and `impact` traverse it.
+
+| repository | calls before | calls after | issues before | issues after | newly resolved |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| chi | 93 | 99 | 2,245 | 2,236 | 6 |
+| Cobra | 399 | 437 | 2,845 | 2,805 | 38 |
+| zap | 368 | 381 | 3,385 | 3,371 | 13 |
+| total | 860 | 917 | 8,475 | 8,412 | 57 |
+
+Source checks confirmed Cobra `legacyArgs(cmd *Command)` to `HasParent`,
+`stripFlags` to `Flags`, zap `NewStdLog` to `Logger.WithOptions`, and chi
+`node.InsertRoute` to `node.addChild` / `replaceChild`. chi's
+`Mux.ServeHTTP -> mx.handler.ServeHTTP` remains unresolved: the receiver is an
+interface value assembled through middleware/value flow, so no edge to
+`routeHTTP` is claimed.
+
+Release measurements include process startup and the normal cache freshness
+check; they are observations rather than a latency promise. Schema 18 stores a
+bounded receiver-type map in Go callable artifacts. On the substantial Cobra
+snapshot it re-resolves only the changed package plus existing importers during
+refresh; the refresh regression proves a cross-file method addition updates a
+typed caller.
+
+| repository | version | cold task find | warm task find | cache bytes |
+| --- | --- | ---: | ---: | ---: |
+| chi | Mission 30 baseline | 0.119 s | 0.026 s | 909,495 |
+| chi | receiver resolution | 0.119 s | 0.027 s | 1,002,955 |
+| Cobra | Mission 30 baseline | 0.140 s | 0.030 s | 1,233,884 |
+| Cobra | receiver resolution | 0.148 s | 0.032 s | 1,391,938 |
+
+The candidate binary was 14,288,224 bytes versus 14,232,680 bytes at the
+baseline (+55,544 bytes, 0.39%).
+
 Release-mode comparison against `bf6b69a` was run on this machine using the
 same source snapshots and a natural-language task find. Timings include process
 startup and the ordinary source-hash freshness work; they are engineering

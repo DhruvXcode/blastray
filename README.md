@@ -60,7 +60,7 @@ instruction files are generated.
 
 ## Supported languages
 
-JavaScript, TypeScript, Python, Rust, Go, and Java have conservative structural support. Dynamic, external-package, and compiler-dependent relationships remain unresolved rather than guessed. Java needs no JVM, JDK, Maven, Gradle, compiler, LSP, classpath, or package-manager execution. Go nested-module cross-package imports are not currently modeled.
+JavaScript, TypeScript, Python, Rust, Go, and Java have conservative structural support. Go also proves uniquely indexed method calls on explicitly typed concrete parameters and direct locals, including repository-local imported types. Dynamic, interface, chained, external-package, and compiler-dependent relationships remain unresolved rather than guessed. Java needs no JVM, JDK, Maven, Gradle, compiler, LSP, classpath, or package-manager execution. Go nested-module cross-package imports are not currently modeled.
 
 ## Development
 

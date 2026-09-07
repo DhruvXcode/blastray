@@ -19,11 +19,12 @@ const SKIP_DIRECTORIES: [&str; 7] = [
 ];
 const CACHE_DIRECTORY: &str = ".blastray";
 const CACHE_FILE: &str = "index.bin";
-// Search terms used to be destructively stemmed at index time.  Schema 17
+// Search terms used to be destructively stemmed at index time. Schema 17
 // stores source spellings instead; query-time expansion can then try a stem
 // without making a lossy spelling (for example `incoming` -> `incom`) the
-// only evidence available to retrieval.
-const CACHE_SCHEMA: u32 = 17;
+// only evidence available to retrieval. Schema 18 adds the compact Go
+// receiver bindings persisted in provider parse artifacts.
+const CACHE_SCHEMA: u32 = 18;
 
 pub fn no_supported_source_files_message() -> String {
     language::no_supported_source_files_message()
@@ -412,6 +413,7 @@ impl Index {
         );
 
         let mut affected = importers;
+        affected.extend(language::resolution_scope(&self.parsed, &relative));
         affected.insert(relative);
         let resolved = language::resolve_files(&self.parsed, &affected, &self.context);
         for path in affected {
@@ -1490,6 +1492,36 @@ mod tests {
         fs::remove_dir_all(repo.0.join(CACHE_DIRECTORY)).unwrap();
         assert_persistent_equivalent(&repo);
         assert!(cache_path(&repo).is_file());
+    }
+
+    #[test]
+    fn go_receiver_resolution_refreshes_the_changed_package_scope() {
+        let repo = Repo::new(&[
+            (
+                "entry.go",
+                "package example\ntype Worker struct{}\nfunc entry(worker Worker) { worker.Run() }\n",
+            ),
+            ("worker.go", "package example\n"),
+        ]);
+        let mut index = Index::build(&repo.0).unwrap();
+        assert!(
+            index
+                .inspect("entry.go::entry")
+                .unwrap()
+                .contains("Direct callees: none")
+        );
+
+        repo.write(
+            "worker.go",
+            "package example\nfunc (worker Worker) Run() {}\n",
+        );
+        assert_eq!(
+            index.refresh(Path::new("worker.go")).unwrap(),
+            RefreshKind::Incremental
+        );
+        let inspect = index.inspect("entry.go::entry").unwrap();
+        assert!(inspect.contains("worker.go::Worker.Run"), "{inspect}");
+        assert_equivalent(&index, &Index::build(&repo.0).unwrap());
     }
 
     #[test]

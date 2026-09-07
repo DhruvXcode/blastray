@@ -2,6 +2,15 @@
 
 The index is a small code graph, not a general-purpose database.
 
+## Schema 18 Go receiver bindings
+
+Schema 18 persists the compact Go callable receiver-type map used for
+conservative member lookup: declared receiver, explicitly typed parameters,
+and direct function-scope typed `var` declarations. It stores type spellings,
+not source bodies or value-flow history. This adds approximately 10.3% cache
+space on chi and 12.8% on Cobra in the release measurement; old caches rebuild
+safely.
+
 ## Retrieval schema 17
 
 Schema 17 changes only bounded discovery evidence. `SearchFact` still stores

@@ -7,6 +7,15 @@
   receiver/interface semantics. A fielded score plus coverage, production
   priority, and bounded graph mass gives a useful implementation-area selector
   without inventing graph facts.
+
+## Mission 31 Go receiver lesson
+
+- GitNexus separates syntax-proven receiver bindings from its broader
+  compound-receiver and interface machinery; CodeGraph likewise keeps an
+  unresolved receiver when it cannot establish a concrete owner. BlastRay
+  adopts only the compact first step: direct declared concrete bindings plus a
+  unique local method lookup. It deliberately does not inherit interface
+  fan-out, promoted-method guessing, or general value flow.
 ## GitNexus (commit `932d937085e14664f4ef97b06506bf01034497ab`)
 - Finding: file content hashes classify unchanged, changed, added, and deleted
   files deterministically; incremental work starts from that diff.

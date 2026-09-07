@@ -197,6 +197,24 @@ calls, receiver calls, and uniquely local module imports without running Go or
 reading a package cache. The generic core remains provider-neutral; schema 11
 invalidates caches before the Go parsed artifact and provider-context facts.
 
+## Conservative Go member resolution
+
+Go resolution keeps a small provider-owned type-binding map per callable: its
+declared receiver, explicitly typed parameters, and direct function-scope
+`var` declarations. A simple `value.Method()` becomes `CALLS` only when that
+binding names one locally indexed method, either in the same package or through
+an exact repository-local import. Pointer spelling is normalized only for this
+method-set lookup. A Go file refresh re-resolves its package peers because a
+method can be declared in another file of the same package.
+
+There is no implementation fan-out for interface calls and no general value
+flow. Fields, promoted methods, chains, factories, callbacks, control-flow
+assignments, external packages, and unknown types remain explicit unresolved
+or ambiguous boundaries. The common graph receives only ordinary proven
+`ResolvedCall` facts; query, trace, and impact stay language-neutral. Chained
+member calls identify their value-flow boundary in inspection rather than being
+presented as a missing proven path.
+
 ## Mission 18 boundary
 
 Java is the fifth compiled provider. It extracts declared packages, top-level
