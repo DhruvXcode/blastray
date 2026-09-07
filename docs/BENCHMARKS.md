@@ -1172,6 +1172,54 @@ typed caller.
 The candidate binary was 14,288,224 bytes versus 14,232,680 bytes at the
 baseline (+55,544 bytes, 0.39%).
 
+## Mission 32 utility decision gate — FAIL
+
+This is one fresh, read-only current-BlastRay run for each exact Mission 25
+task and snapshot, compared with the frozen bare result in
+[`mission25.json`](../misc/agent-benchmark/mission25.json). Product SHA:
+`1bd0381658cdb195c754a2834903c3bccf7e375d`. The CLI remained
+`codex-cli 0.153.4`, model `gpt-5.6-terra`, high reasoning, normal shell/read
+tools, one installed BlastRay skill, and the four-tool stdio MCP. Runs used the
+original prompts verbatim, a fresh ephemeral Codex context, read-only sandbox,
+and no tests, edits, git history, or repository network access.
+
+Major actions are completed shell commands plus MCP calls, using the same
+JSONL extraction rule as Mission 25; search/read categories may overlap a
+shell command. All run worktrees had an empty source diff afterwards.
+
+| task | frozen facts | bare major / search / read | current major / search / read | current MCP (find/inspect/trace/impact) | bare time / tokens | current time / tokens |
+| --- | --- | ---: | ---: | --- | --- | --- |
+| chi `ae6be74` | 4/4 | 6 / 2 / 6 | 9 / 4 / 5 | 1 / 1 / 0 / 0 | 62.525 s / 152,199 | 67.787 s / 232,879 |
+| PyJWT `7144e45` | 4/4 | 7 / 2 / 7 | 12 / 2 / 3 | 1 / 6 / 0 / 0 | 78.334 s / 214,964 | 67.198 s / 244,325 |
+| node-fetch `8b3320d` | 4/4 | 7 / 4 / 5 | 6 / 1 / 3 | 1 / 2 / 0 / 0 | 69.329 s / 171,182 | 51.793 s / 154,370 |
+| total | 12/12 | 20 / 8 / 18 | 27 / 7 / 11 | 3 / 9 / 0 / 0 | 210.188 s / 538,345 | 186.778 s / 631,574 |
+
+Current answers were source-grounded and contained no material incorrect claim
+or frozen-fact omission. The first `find` located the relevant implementation
+area on all tasks. It preceded broad repository rummaging on chi and PyJWT;
+node-fetch performed one broad `rg --files` listing in the same initial skill
+read before `find`. Every inspected source packet was subsequently reread from
+the filesystem; PyJWT also made six serial, distinct `inspect` calls. chi's
+dynamic handler/interface boundary caused a legitimate targeted source
+fallback. Mission 31's new concrete receiver edges did not materially assist
+this particular dynamic chi runtime path.
+
+Retrieval 2.0 improved chi compared with Mission 25's old BlastRay run (17 to
+9 major actions; 11 to 2 MCP calls) and supplied a good first area for all
+three verbose tasks. It did not change PyJWT's serial inspection pattern (12
+major actions, 7 MCP calls), and node-fetch only narrowly beat bare. Shell
+reads fell from 18 to 11, but 12 MCP calls replaced that work; the suite rose
+from 20 to 27 major actions and remains above the strong-pass threshold of 16.
+Wall time fell by 23.410 seconds, but reported input tokens rose by 93,229.
+
+The decision is therefore **FAIL**, not a retrieval or Go-graph correctness
+failure. The deeper interaction hypothesis to reconsider is whether four
+separate exposed operations plus a skill can cause the agent to treat structural
+evidence as an inspection checklist and reread it, rather than as a stopping
+point. Do not begin another ranking, packet, wording, or context-size tuning
+loop from this result; management should decide whether the exposed-tool
+architecture or broader product thesis needs redesign before further expansion.
+
 Release-mode comparison against `bf6b69a` was run on this machine using the
 same source snapshots and a natural-language task find. Timings include process
 startup and the ordinary source-hash freshness work; they are engineering
